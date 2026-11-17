@@ -1,0 +1,6703 @@
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+
+
+
+
+const ESTADOS = {
+    INACTIVO: 'INACTIVO',
+    ENTRANDO: 'ENTRANDO',
+    BUSCANDO: 'BUSCANDO',
+    ACERCANDO: 'ACERCANDO',
+    RECOGIENDO: 'RECOGIENDO',
+    INSPECCIONANDO: 'INSPECCIONANDO',
+    DECIDIENDO: 'DECIDIENDO',
+    GUARDANDO: 'GUARDANDO',
+    DEVOLVIENDO: 'DEVOLVIENDO',
+    ESPERANDO: 'ESPERANDO',
+    RUTA: 'RUTA',
+    CAJA: 'CAJA',
+    PAGANDO: 'PAGANDO',
+    REGRESANDO: 'REGRESANDO',
+    REGRESANDO_CARRITO: 'REGRESANDO_CARRITO',
+    FINALIZADO: 'FINALIZADO'
+};
+
+
+
+
+
+const CONFIG_BASE = {
+    modelo: '/modelos/Cliente2.glb',
+    posicion: { x: 0, y: 0, z: 20 },
+
+    altura: 1.05,
+    escala: 1,
+
+    velocidad: 8.2,
+    velocidadEntrada: 4.0,
+    velocidadRegreso: 4.0,
+
+    limiteX: 29,
+    limiteZMin: -27,
+    limiteZMax: 55,
+
+    radioColision: 0.20,
+    margenObstaculos: 0.14,
+    tamanoCelda: 0.50,
+
+    puertaCentroX: 0,
+    puertaAncho: 8.5,
+    puertaZInterior: 27.5,
+    puertaZUmbral: 29,
+    puertaZExterior: 31.5,
+
+    probabilidadCompra: 0.90,
+    probabilidadDejarEnOtroRack: 0.42,
+
+    distanciaProducto: 0.20,
+    distanciaFrenteProducto: 0.30,
+    distanciaContactoMano: 0.05,
+
+    tiempoRecoger: 1.5,
+    progresoContactoProducto: 0.85,
+    tiempoInspeccionar: 2.5,
+    tiempoGuardar: 1.4,
+    tiempoDevolver: 1.4,
+    tiempoPago: 3.0,
+    tiempoEntreProductos: 0.8,
+    tiempoReintento: 1.5,
+toleranciaAgarre: 0.14,
+    tiempoAnimacionAgarre: 0.38,
+    escalaProductoMano: 0.65,
+
+    offsetProductoMano: {
+        x: 0,
+        y: 0.04,
+        z: 0.12
+    },
+    offsetPalmaProducto: {
+        x: 0,
+        y: 0.06,
+        z: 0.01
+    },
+
+    rotacionProductoMano: {
+        x: 0,
+        y: 0,
+        z: 0
+    },
+
+    alturaProductoInspeccion: 1.25,
+    distanciaProductoInspeccion: 0.32,
+    alturaEstanteInferior: 0.90,
+
+    maximoProductos: 8,
+    distanciaMaximaBusqueda: 70,
+
+    
+    soloPlatanos: false,
+    nombreProductoBuscado: '',
+
+    separacionProductoRack: 0.06,
+
+    
+    intervaloRecalculoRuta: 0.55,
+    maximosIntentosMovimiento: 5,
+    distanciaRecalculo: 0.45,
+    tiempoMaximoAtasco: 3.5,
+
+    
+    distanciaLlegada: 0.16,
+    distanciaWaypoint: 0.30,
+
+    
+    usarAnimacionesGLB: true,
+    velocidadAnimacionGLB: 1.9,
+
+    repetirRuta: false,
+    inactivo: false,
+
+    aceleracionMovimiento: 7.85,
+    suavizadoGiro: 7,
+
+    productos: null,
+    carrito: null,
+    mobiliario: null,
+    colisiones: null,
+
+    posicionCaja: { x: 0, z: 22.5 },
+
+    correccionRotacion: 0,
+
+    alEntrar: null,
+    alComprar: null,
+    alPagar: null,
+    alFinalizar: null,
+    alCambiarEstado: null
+};
+
+const loaderGLTF = new GLTFLoader();
+
+const reservasProductos = new WeakMap();
+const reservasRacks = new Map();
+
+const TAMANO_ZONA_RACK = 3.5;
+
+let siguienteIdCliente = 1;
+
+
+
+
+
+function limitar(valor, minimo, maximo) {
+    return Math.max(minimo, Math.min(maximo, valor));
+}
+
+function numero(valor, defecto = 0) {
+    return Number.isFinite(valor) ? valor : defecto;
+}
+
+function distanciaXZ(a, b) {
+    return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+function normalizarNombre(nombre) {
+    return String(nombre ?? '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]/g, '');
+}
+
+function suavizar(valor) {
+    valor = limitar(valor, 0, 1);
+    return valor * valor * (3 - 2 * valor);
+}
+
+
+
+
+
+class MinHeap {
+    constructor() {
+        this.elementos = [];
+    }
+
+    get length() {
+        return this.elementos.length;
+    }
+
+    limpiar() {
+        this.elementos.length = 0;
+    }
+
+    insertar(elemento) {
+        const lista = this.elementos;
+        lista.push(elemento);
+
+        let indice = lista.length - 1;
+
+        while (indice > 0) {
+            const padre = Math.floor((indice - 1) / 2);
+
+            if (lista[padre].f <= lista[indice].f) {
+                break;
+            }
+
+            [lista[padre], lista[indice]] =
+                [lista[indice], lista[padre]];
+
+            indice = padre;
+        }
+    }
+
+    extraer() {
+        const lista = this.elementos;
+
+        if (!lista.length) return null;
+        if (lista.length === 1) return lista.pop();
+
+        const primero = lista[0];
+        lista[0] = lista.pop();
+
+        let indice = 0;
+
+        while (true) {
+            const izquierda = indice * 2 + 1;
+            const derecha = izquierda + 1;
+
+            let menor = indice;
+
+            if (
+                izquierda < lista.length &&
+                lista[izquierda].f < lista[menor].f
+            ) {
+                menor = izquierda;
+            }
+
+            if (
+                derecha < lista.length &&
+                lista[derecha].f < lista[menor].f
+            ) {
+                menor = derecha;
+            }
+
+            if (menor === indice) break;
+
+            [lista[indice], lista[menor]] =
+                [lista[menor], lista[indice]];
+
+            indice = menor;
+        }
+
+        return primero;
+    }
+}
+
+
+
+
+
+export function crearClienteSupermercado(scene, opciones = {}) {
+    if (!scene?.isScene) {
+        throw new Error(
+            'crearClienteSupermercado necesita una THREE.Scene.'
+        );
+    }
+
+    const config = {
+        ...CONFIG_BASE,
+        ...opciones,
+
+        colisiones:
+            opciones.colisiones ??
+            (Array.isArray(opciones.mobiliario)
+                ? opciones.mobiliario
+                : CONFIG_BASE.colisiones),
+
+        posicion: {
+            ...CONFIG_BASE.posicion,
+            ...(opciones.posicion ?? {})
+        },
+
+        posicionCaja: {
+            ...CONFIG_BASE.posicionCaja,
+            ...(opciones.posicionCaja ?? {})
+        },
+
+        offsetProductoMano: {
+            ...CONFIG_BASE.offsetProductoMano,
+            ...(opciones.offsetProductoMano ?? {})
+        },
+
+        offsetPalmaProducto: {
+            ...CONFIG_BASE.offsetPalmaProducto,
+            ...(opciones.offsetPalmaProducto ?? {})
+        },
+
+        rotacionProductoMano: {
+            ...CONFIG_BASE.rotacionProductoMano,
+            ...(opciones.rotacionProductoMano ?? {})
+        }
+    };
+
+    const id = siguienteIdCliente++;
+
+    const grupo = new THREE.Group();
+    grupo.name = `CLIENTE_SUPERMERCADO_${id}`;
+
+    grupo.position.set(
+        numero(config.posicion.x),
+        numero(config.posicion.y),
+        numero(config.posicion.z)
+    );
+
+    grupo.userData.esCliente = true;
+    grupo.userData.idCliente = id;
+
+    scene.add(grupo);
+
+    
+    
+    
+
+    let modelo = null;
+    let mixer = null;
+
+    let accionCaminar = null;
+    let accionReposo = null;
+
+    let cargado = false;
+    let eliminado = false;
+    let detenido = false;
+    let entradaNotificada = false;
+
+    let estado = config.inactivo
+        ? ESTADOS.INACTIVO
+        : ESTADOS.BUSCANDO;
+
+    let objetivo = null;
+    let ruta = [];
+    let indiceRuta = 0;
+    let posicionClienteAntesDeReubicar = new THREE.Vector3();
+
+let tienePosicionClienteAntesDeReubicar = false;
+let productoEsSuperior = false;
+let productoReubicadoPendiente = false;
+    let tiempoEstado = 0;
+    let tiempoActualizarObstaculos = 0;
+
+    let tiempoRecalculoRuta = 0;
+    let intentosMovimiento = 0;
+    let ultimaPosicionMovimiento = new THREE.Vector3();
+    let tiempoSinMovimiento = 0;
+
+    let productoObjetivo = null;
+    let productoEnMano = null;
+    let productoOriginal = null;
+
+    let productoEsInferior = false;
+    let ladoAgarre = 'derecho';
+
+    let rackReservado = null;
+
+    let compras = [];
+
+    const productosExaminados = new Set();
+    const productosConRutaFallida = new Set();
+    const racksVisitados = new Set();
+
+    let callbackPagoPendiente = null;
+    let ticketPendiente = null;
+    let callbackRegreso = null;
+
+    let decisionCompra = true;
+    let faseAnimacion = Math.random() * Math.PI * 2;
+    let rotacionObjetivo = grupo.rotation.y;
+    let velocidadActual = 0;
+    let movimientoSuave = 0;
+    let tiempoIdle = Math.random() * 8;
+    let inclinacionCabezaObjetivo = 0;
+    let inclinacionTorsoObjetivo = 0;
+    let giroCabezaObjetivo = 0;
+    let intensidadGiro = 0;
+    let apoyandoPieDerecho = true;
+
+    const huesos = {};
+    const huesosBase = new Map();
+
+    const rig = {
+        cadera: null,
+        torso: null,
+        cuello: null,
+        cabeza: null,
+
+        brazoIzquierdo: null,
+        brazoDerecho: null,
+
+        antebrazoIzquierdo: null,
+        antebrazoDerecho: null,
+
+        manoIzquierda: null,
+        manoDerecha: null,
+
+        piernaIzquierda: null,
+        piernaDerecha: null,
+
+        pantorrillaIzquierda: null,
+        pantorrillaDerecha: null
+    };
+
+    
+    const EJE_X = new THREE.Vector3(1, 0, 0);
+    const quaternionTemporal = new THREE.Quaternion();
+    const vectorTemporal = new THREE.Vector3();
+    const vectorTemporal2 = new THREE.Vector3();
+    const escalaTemporal = new THREE.Vector3();
+    const cajaTemporal = new THREE.Box3();
+    const tamanoTemporal = new THREE.Vector3();
+    const matrizTemporal = new THREE.Matrix4();
+    const cajaAgarreProducto = new THREE.Box3();
+    let productoConCajaAgarre = null;
+    const offsetPalmaLocal = new THREE.Vector3(
+        numero(config.offsetPalmaProducto.x),
+        numero(config.offsetPalmaProducto.y),
+        numero(config.offsetPalmaProducto.z)
+    );
+    const offsetPalmaIzquierdaLocal = offsetPalmaLocal.clone();
+
+    const ikAgarre = {
+        hombro: new THREE.Vector3(),
+        codo: new THREE.Vector3(),
+        muneca: new THREE.Vector3(),
+        centroProducto: new THREE.Vector3(),
+        puntoContacto: new THREE.Vector3(),
+        normalContacto: new THREE.Vector3(),
+        objetivoContacto: new THREE.Vector3(),
+        objetivo: new THREE.Vector3(),
+        offsetPalmaLocal: new THREE.Vector3(),
+        offsetPalmaMundo: new THREE.Vector3(),
+        codoActual: new THREE.Vector3(),
+        codoObjetivo: new THREE.Vector3(),
+        direccion: new THREE.Vector3(),
+        direccionActual: new THREE.Vector3(),
+        direccionDeseada: new THREE.Vector3(),
+        perpendicular: new THREE.Vector3(),
+        quaternionDeltaMundo: new THREE.Quaternion(),
+        quaternionPadre: new THREE.Quaternion(),
+        quaternionPadreInversa: new THREE.Quaternion(),
+        quaternionDeltaLocal: new THREE.Quaternion()
+    };
+
+    
+    
+    
+
+    const animacionAgarre = {
+        activa: false,
+        tiempo: 0,
+        duracion: config.tiempoAnimacionAgarre,
+
+        posicionInicial: new THREE.Vector3(),
+        posicionFinal: new THREE.Vector3(),
+
+        quaternionInicial: new THREE.Quaternion(),
+        quaternionFinal: new THREE.Quaternion(),
+
+        escalaInicial: new THREE.Vector3(1, 1, 1),
+        escalaFinal: new THREE.Vector3(1, 1, 1)
+    };
+
+    const poseAgarreInspeccion = {
+        activa: false,
+        duracion: 0,
+        posicionGrupoY: 0,
+        huesos: []
+    };
+
+    
+    
+    
+
+    const animacionProducto = {
+        activa: false,
+        tipo: null,
+        fase: null,
+        tiempo: 0,
+        duracion: 0,
+
+        posicionInicial: new THREE.Vector3(),
+        posicionFinal: new THREE.Vector3(),
+
+        quaternionInicial: new THREE.Quaternion(),
+        quaternionFinal: new THREE.Quaternion(),
+
+        escalaInicial: new THREE.Vector3(1, 1, 1),
+        escalaFinal: new THREE.Vector3(1, 1, 1),
+
+        posicionTemporal: new THREE.Vector3(),
+        quaternionTemporal: new THREE.Quaternion(),
+        posicionLocalTemporal: new THREE.Vector3(),
+        quaternionPadreTemporal: new THREE.Quaternion()
+    };
+
+const animacionDeposito = {
+    preparada: false,
+
+    fase: null,
+    liberado: false,
+    completada: false,
+    error: false,
+
+    compra: null,
+
+    alturaProducto: 0,
+
+    centroDesdePalmaLocal: new THREE.Vector3(),
+
+    objetivoCentro: new THREE.Vector3(),
+    objetivoPalma: new THREE.Vector3(),
+
+    palmaInicial: new THREE.Vector3(),
+    palmaFinal: new THREE.Vector3(),
+
+    progresoDescenso: 0,
+
+    duracionPreparacion: 0.16,
+    duracionDescenso: 0.56,
+    duracionLiberacion: 0.10,
+    duracionRetirada: 0.18
+};
+
+    
+    
+    
+
+    function estaEnCorredorPuerta(x, z) {
+        const mitadPuerta = config.puertaAncho / 2;
+
+        return (
+            Math.abs(x - config.puertaCentroX) <= mitadPuerta &&
+            z >= config.puertaZInterior - 1 &&
+            z <= config.puertaZExterior + 1
+        );
+    }
+
+    function esObstaculoDeFachada(obstaculo) {
+        const zPuerta = config.puertaZUmbral;
+
+        return (
+            Math.abs(obstaculo.z - zPuerta) < 2.5 &&
+            obstaculo.z - obstaculo.profundidad / 2 <= zPuerta + 1 &&
+            obstaculo.z + obstaculo.profundidad / 2 >= zPuerta - 1
+        );
+    }
+
+    
+    
+    
+
+    function obtenerClaveRack(producto) {
+        const datos = producto.userData ?? {};
+
+        if (datos.rackReubicado) {
+            return datos.rackReubicado;
+        }
+
+        const claveExplicita =
+            datos.idRack ??
+            datos.rackId ??
+            datos.estante ??
+            datos.departamento ??
+            datos.categoria;
+
+        if (
+            claveExplicita !== undefined &&
+            claveExplicita !== null
+        ) {
+            return `rack:${claveExplicita}`;
+        }
+
+        producto.getWorldPosition(vectorTemporal);
+
+        const x = Math.round(vectorTemporal.x / TAMANO_ZONA_RACK);
+        const z = Math.round(vectorTemporal.z / TAMANO_ZONA_RACK);
+
+        return `zona:${x},${z}`;
+    }
+
+    function rackDisponible(producto) {
+        const clave = obtenerClaveRack(producto);
+        const propietario = reservasRacks.get(clave);
+
+        return propietario === undefined || propietario === id;
+    }
+
+    function reservarRack(producto) {
+        const clave = obtenerClaveRack(producto);
+
+        if (!rackDisponible(producto)) return false;
+
+        rackReservado = clave;
+        reservasRacks.set(clave, id);
+
+        racksVisitados.add(clave);
+
+        return true;
+    }
+
+    function liberarRack() {
+        if (!rackReservado) return;
+
+        if (reservasRacks.get(rackReservado) === id) {
+            reservasRacks.delete(rackReservado);
+        }
+
+        rackReservado = null;
+    }
+
+    
+    
+    
+
+    function detectarHuesos(raiz) {
+        Object.keys(huesos).forEach(
+            nombre => delete huesos[nombre]
+        );
+
+        huesosBase.clear();
+
+        raiz.traverse(obj => {
+            if (!obj.isBone) return;
+
+            huesos[normalizarNombre(obj.name)] = obj;
+console.log('[HUESO]', obj.name, '=>', normalizarNombre(obj.name));
+            huesosBase.set(obj, {
+                quaternion: obj.quaternion.clone(),
+                posicion: obj.position.clone()
+            });
+        });
+    }
+
+    function buscarHueso(...patrones) {
+        for (const [nombre, hueso] of Object.entries(huesos)) {
+            if (patrones.some(patron => nombre.includes(patron))) {
+                return hueso;
+            }
+        }
+
+        return null;
+    }
+
+function actualizarRig() {
+    rig.cadera = buscarHueso('hips', 'pelvis');
+
+    rig.torso = buscarHueso(
+        'spine2',
+        'spine1',
+        'spine',
+        'chest'
+    );
+
+    rig.cuello = buscarHueso('neck', 'cuello');
+    rig.cabeza = buscarHueso('head', 'cabeza');
+
+    rig.brazoIzquierdo = buscarHueso(
+        'leftupperarm',
+        'upperarml',
+        'leftarm'
+    );
+
+    rig.brazoDerecho = buscarHueso(
+        'rightupperarm',
+        'upperarmr',
+        'rightarm'
+    );
+
+    rig.antebrazoIzquierdo = buscarHueso(
+        'leftforearm',
+        'forearml',
+        'lowerarml'
+    );
+
+    rig.antebrazoDerecho = buscarHueso(
+        'rightforearm',
+        'forearmr',
+        'lowerarmr'
+    );
+
+    rig.manoIzquierda = buscarHueso(
+        'lefthand',
+        'handl',
+        'handleft'
+    );
+
+    rig.manoDerecha = buscarHueso(
+        'righthand',
+        'handr',
+        'handright'
+    );
+
+    rig.piernaIzquierda = buscarHueso(
+        'leftupleg',
+        'uplegleft',
+        'leftthigh',
+        'thighl'
+    );
+
+    rig.piernaDerecha = buscarHueso(
+        'rightupleg',
+        'uplegright',
+        'rightthigh',
+        'thighr'
+    );
+
+    rig.pantorrillaIzquierda = buscarHueso(
+        'leftleg',
+        'lowerlegleft',
+        'calfl',
+        'leftcalf'
+    );
+
+    rig.pantorrillaDerecha = buscarHueso(
+        'rightleg',
+        'lowerlegright',
+        'calfr',
+        'rightcalf'
+    );
+
+    // Actualizar matrices mundiales del rig.
+    grupo.updateMatrixWorld(true);
+
+    // Diagnosticar la posición de ambas palmas.
+    for (const [lado, mano] of [
+        ['izquierdo', rig.manoIzquierda],
+        ['derecho', rig.manoDerecha]
+    ]) {
+        if (!mano) {
+            console.warn(
+                `[RIG ${id}] No se encontró la mano ${lado}.`
+            );
+            continue;
+        }
+
+        // Posición mundial del hueso de la mano.
+        const posicionMano = mano.getWorldPosition(
+            new THREE.Vector3()
+        );
+
+        // Posición mundial estimada de la palma.
+        const posicionPalma = mano.localToWorld(
+            offsetPalmaLocal.clone()
+        );
+
+        console.log(
+            `[DIAGNÓSTICO PALMA ${id}]`,
+            {
+                lado,
+                hueso: mano.name,
+
+                posicionMano: posicionMano.toArray().map(
+                    v => Number(v.toFixed(3))
+                ),
+
+                posicionPalma: posicionPalma.toArray().map(
+                    v => Number(v.toFixed(3))
+                ),
+
+                offset: offsetPalmaLocal.toArray().map(
+                    v => Number(v.toFixed(3))
+                )
+            }
+        );
+    }
+}
+
+    function calcularOffsetPalmaDesdeEsqueleto(mano, destino) {
+        if (!mano || !modelo) return false;
+
+        modelo.updateMatrixWorld(true);
+
+        const inversaMano = new THREE.Matrix4()
+            .copy(mano.matrixWorld)
+            .invert();
+        const suma = new THREE.Vector3();
+        const punto = new THREE.Vector3();
+        let pesoTotal = 0;
+
+        modelo.traverse(objeto => {
+            if (!objeto.isSkinnedMesh || !objeto.skeleton) return;
+
+            const indiceMano =
+                objeto.skeleton.bones.indexOf(mano);
+            const posicion = objeto.geometry?.attributes?.position;
+            const indices = objeto.geometry?.attributes?.skinIndex;
+            const pesos = objeto.geometry?.attributes?.skinWeight;
+
+            if (
+                indiceMano < 0 ||
+                !posicion ||
+                !indices ||
+                !pesos
+            ) {
+                return;
+            }
+
+            objeto.skeleton.update();
+            objeto.updateMatrixWorld(true);
+
+            for (let indice = 0; indice < posicion.count; indice++) {
+                let pesoMano = 0;
+
+                for (let canal = 0; canal < 4; canal++) {
+                    if (indices.getComponent(indice, canal) === indiceMano) {
+                        pesoMano += pesos.getComponent(indice, canal);
+                    }
+                }
+
+                if (pesoMano < 0.35) continue;
+
+                punto.fromBufferAttribute(posicion, indice);
+                objeto.applyBoneTransform(indice, punto);
+                punto
+                    .applyMatrix4(objeto.matrixWorld)
+                    .applyMatrix4(inversaMano);
+
+                suma.addScaledVector(punto, pesoMano);
+                pesoTotal += pesoMano;
+            }
+        });
+
+        if (pesoTotal <= 0) return false;
+
+        destino
+            .copy(suma)
+            .multiplyScalar(1 / pesoTotal);
+
+        return true;
+    }
+
+    function obtenerRigBrazo(lado = ladoAgarre) {
+        if (lado === 'izquierdo') {
+            return {
+                hombro: rig.brazoIzquierdo,
+                codo: rig.antebrazoIzquierdo,
+                mano: rig.manoIzquierda
+            };
+        }
+
+        return {
+            hombro: rig.brazoDerecho,
+            codo: rig.antebrazoDerecho,
+            mano: rig.manoDerecha
+        };
+    }
+
+
+function medirAlcanceBrazo(brazo, cajaProducto) {
+    if (!brazo?.mano || !cajaProducto || cajaProducto.isEmpty()) {
+        return null;
+    }
+
+    const posicionMano = brazo.mano.getWorldPosition(
+        new THREE.Vector3()
+    );
+
+    // Punto más cercano de la superficie del producto.
+    const contacto = new THREE.Vector3(
+        THREE.MathUtils.clamp(
+            posicionMano.x,
+            cajaProducto.min.x,
+            cajaProducto.max.x
+        ),
+        THREE.MathUtils.clamp(
+            posicionMano.y,
+            cajaProducto.min.y,
+            cajaProducto.max.y
+        ),
+        THREE.MathUtils.clamp(
+            posicionMano.z,
+            cajaProducto.min.z,
+            cajaProducto.max.z
+        )
+    );
+
+    const distanciaMano = posicionMano.distanceTo(contacto);
+
+    if (!brazo.hombro || !brazo.codo) {
+        return {
+            contacto,
+            distanciaMano,
+            alcanzable: false,
+            deficit: Infinity
+        };
+    }
+
+    const hombro = brazo.hombro.getWorldPosition(
+        new THREE.Vector3()
+    );
+
+    const codo = brazo.codo.getWorldPosition(
+        new THREE.Vector3()
+    );
+
+    // Longitud real de los segmentos del brazo.
+    const longitudSuperior = hombro.distanceTo(codo);
+    const longitudInferior = codo.distanceTo(posicionMano);
+
+    const alcanceMaximo =
+        longitudSuperior + longitudInferior;
+
+    const distanciaHombro = hombro.distanceTo(contacto);
+
+    const margenAlcance = 0.08;
+
+    const deficit = Math.max(
+        0,
+        distanciaHombro - alcanceMaximo + margenAlcance
+    );
+
+    return {
+        contacto,
+        distanciaMano,
+        alcanzable: deficit === 0,
+        deficit
+    };
+}
+
+
+function seleccionarBrazoAgarre(producto) {
+    if (!producto) return false;
+
+    producto.updateMatrixWorld(true);
+    grupo.updateMatrixWorld(true);
+    cajaTemporal.setFromObject(producto);
+
+    if (cajaTemporal.isEmpty()) return false;
+
+    const brazoDerecho = obtenerRigBrazo('derecho');
+    const brazoIzquierdo = obtenerRigBrazo('izquierdo');
+
+    const alcanceDerecho = medirAlcanceBrazo(
+        brazoDerecho,
+        cajaTemporal
+    );
+
+    const alcanceIzquierdo = medirAlcanceBrazo(
+        brazoIzquierdo,
+        cajaTemporal
+    );
+
+    const candidatos = [
+        {
+            lado: 'derecho',
+            alcance: alcanceDerecho
+        },
+        {
+            lado: 'izquierdo',
+            alcance: alcanceIzquierdo
+        }
+    ].filter(candidato =>
+        candidato.alcance &&
+        candidato.alcance.contacto
+    );
+
+    if (!candidatos.length) return false;
+
+    candidatos.sort((a, b) => {
+        if (
+            a.alcance.alcanzable !==
+            b.alcance.alcanzable
+        ) {
+            return a.alcance.alcanzable ? -1 : 1;
+        }
+
+        if (
+            Math.abs(
+                a.alcance.deficit - b.alcance.deficit
+            ) > 0.001
+        ) {
+            return a.alcance.deficit -
+                b.alcance.deficit;
+        }
+
+        return a.alcance.distanciaMano -
+            b.alcance.distanciaMano;
+    });
+
+    const elegido = candidatos[0];
+
+    ladoAgarre = elegido.lado;
+    // Guardar el producto y el punto exacto seleccionado.
+    if (!ikAgarre.puntoContactoFijado) {
+        ikAgarre.puntoContactoFijado =
+            new THREE.Vector3();
+    }
+
+    ikAgarre.puntoContactoFijado.copy(
+        elegido.alcance.contacto
+    );
+
+    ikAgarre.productoContactoFijado = producto;
+
+    console.info(
+        `[CLIENTE ${id}] Usará la mano ${ladoAgarre}.`,
+        {
+            distanciaMano: Number(
+                elegido.alcance.distanciaMano.toFixed(3)
+            ),
+            alcanzable: elegido.alcance.alcanzable,
+            deficit: Number(
+                elegido.alcance.deficit.toFixed(3)
+            ),
+            contacto: ikAgarre.puntoContactoFijado.toArray()
+                .map(v => Number(v.toFixed(3)))
+        }
+    );
+
+    return true;
+}
+
+
+    function cancelarReubicacion() {
+        const origen = productoOriginal?.origen;
+        if (!origen) return false;
+
+        productoOriginal = { ...origen };
+        animacionProducto.tipo = 'DEVOLVER';
+        animacionProducto.fase = null;
+        animacionProducto.activa = false;
+        ruta = [];
+        indiceRuta = 0;
+        objetivo = null;
+        liberarReserva();
+
+        return true;
+    }
+
+    
+    
+    
+
+    function detenerAccionesGLB() {
+        if (accionCaminar) {
+            accionCaminar.fadeOut(0.12);
+        }
+
+        if (accionReposo) {
+            accionReposo.fadeOut(0.12);
+        }
+    }
+
+    function activarCaminarGLB() {
+        if (!config.usarAnimacionesGLB || !accionCaminar) {
+            return false;
+        }
+
+        accionReposo?.fadeOut(0.12);
+
+        if (!accionCaminar.isRunning()) {
+            accionCaminar.reset();
+            accionCaminar.enabled = true;
+            accionCaminar.setEffectiveTimeScale(
+                config.velocidadAnimacionGLB
+            );
+            accionCaminar.fadeIn(0.12);
+            accionCaminar.play();
+        }
+
+        accionCaminar.paused = false;
+
+        return true;
+    }
+
+    function activarReposoGLB() {
+        if (!config.usarAnimacionesGLB || !accionReposo) {
+            return false;
+        }
+
+        accionCaminar?.fadeOut(0.12);
+
+        if (!accionReposo.isRunning()) {
+            accionReposo.reset();
+            accionReposo.enabled = true;
+            accionReposo.fadeIn(0.15);
+            accionReposo.play();
+        }
+
+        accionReposo.paused = false;
+
+        return true;
+    }
+
+    function aplicarRotacion(hueso, eje, angulo) {
+        if (!hueso) return;
+
+        const base = huesosBase.get(hueso);
+        if (!base) return;
+
+        hueso.quaternion.copy(base.quaternion);
+
+        quaternionTemporal.setFromAxisAngle(eje, angulo);
+        hueso.quaternion.multiply(quaternionTemporal);
+    }
+
+    function aplicarRotacionEuler(hueso, x, y = 0, z = 0) {
+        if (!hueso) return;
+
+        const base = huesosBase.get(hueso);
+        if (!base) return;
+
+        const euler = new THREE.Euler(x, y, z, 'XYZ');
+        quaternionTemporal.setFromEuler(euler);
+
+        hueso.quaternion.copy(base.quaternion);
+        hueso.quaternion.multiply(quaternionTemporal);
+    }
+
+    function restaurarHueso(hueso, intensidad = 0.15) {
+        if (!hueso) return;
+
+        const base = huesosBase.get(hueso);
+        if (!base) return;
+
+        hueso.quaternion.slerp(base.quaternion, intensidad);
+    }
+
+    function restaurarPoseCompleta() {
+        for (const [hueso, base] of huesosBase) {
+            hueso.quaternion.copy(base.quaternion);
+            hueso.position.copy(base.posicion);
+        }
+
+        grupo.position.y = numero(config.posicion.y);
+    }
+
+    
+    
+    
+
+    function productoEstaEnEstanteInferior(producto) {
+        if (!producto) return false;
+
+        producto.updateMatrixWorld(true);
+
+        cajaTemporal.setFromObject(producto);
+
+        if (cajaTemporal.isEmpty()) return false;
+
+        const alturaCentro =
+            (cajaTemporal.min.y + cajaTemporal.max.y) / 2;
+
+        return alturaCentro < config.alturaEstanteInferior;
+    }
+
+    
+    
+    
+
+    function animarCaminarProcedural(delta) {
+        if (config.usarAnimacionesGLB && accionCaminar) {
+            if (accionCaminar.isRunning()) {
+                accionCaminar.setEffectiveTimeScale(
+                    config.velocidadAnimacionGLB *
+                    THREE.MathUtils.lerp(0.55, 1.32, movimientoSuave)
+                );
+            }
+            return;
+        }
+
+        const ritmo = THREE.MathUtils.clamp(
+            velocidadActual / Math.max(config.velocidad, 0.1),
+            0.35,
+            1.25
+        );
+
+        faseAnimacion += delta * (7.0 + ritmo * 1.8);
+
+        const paso = Math.sin(faseAnimacion);
+        const contrapasado = Math.cos(faseAnimacion);
+        const apoyo = paso * 0.42 * movimientoSuave;
+        const rebote = (1 - Math.cos(faseAnimacion * 2)) * 0.012 * movimientoSuave;
+        const balanceo = contrapasado * 0.026 * movimientoSuave;
+        const giroCadera = contrapasado * 0.035 * movimientoSuave;
+        const inclinacionGiro = limitar(intensidadGiro * 0.11, -0.11, 0.11);
+
+        aplicarRotacionEuler(rig.piernaIzquierda, apoyo, 0, balanceo * 0.35);
+        aplicarRotacionEuler(rig.piernaDerecha, -apoyo, 0, -balanceo * 0.35);
+
+        aplicarRotacion(rig.pantorrillaIzquierda, EJE_X,
+            Math.max(0, -apoyo) * 0.9 + Math.max(0, apoyo) * 0.16);
+        aplicarRotacion(rig.pantorrillaDerecha, EJE_X,
+            Math.max(0, apoyo) * 0.9 + Math.max(0, -apoyo) * 0.16);
+
+        aplicarRotacionEuler(rig.brazoIzquierdo, -apoyo * 0.82, 0, -0.025 * movimientoSuave);
+        aplicarRotacionEuler(rig.brazoDerecho, apoyo * 0.82, 0, 0.025 * movimientoSuave);
+        aplicarRotacion(rig.antebrazoIzquierdo, EJE_X,
+            -0.10 + Math.max(0, apoyo) * 0.28);
+        aplicarRotacion(rig.antebrazoDerecho, EJE_X,
+            -0.10 + Math.max(0, -apoyo) * 0.28);
+
+        aplicarRotacionEuler(rig.cadera, balanceo * 0.35, giroCadera, balanceo * 0.8);
+        aplicarRotacionEuler(rig.torso,
+            -balanceo * 0.42 + inclinacionTorsoObjetivo,
+            -giroCadera * 0.55,
+            -balanceo * 1.05 - inclinacionGiro);
+        aplicarRotacionEuler(rig.cabeza,
+            -balanceo * 0.48 + inclinacionCabezaObjetivo,
+            giroCabezaObjetivo - giroCadera * 0.25,
+            -contrapasado * 0.012 * movimientoSuave);
+
+        grupo.position.y = numero(config.posicion.y) + rebote;
+    }
+
+    
+    
+
+
+
+
+function animarAgacharse(intensidad = 1) {
+    const t = suavizar(limitar(intensidad, 0, 1));
+
+    // Guardar la posición original de la pelvis una sola vez.
+    if (rig.cadera && !rig.cadera.userData.posicionBaseAgachado) {
+        rig.cadera.userData.posicionBaseAgachado =
+            rig.cadera.position.clone();
+    }
+
+    // Descenso progresivo de la pelvis.
+    if (rig.cadera) {
+        const base = rig.cadera.userData.posicionBaseAgachado;
+
+        rig.cadera.position.set(
+            base.x,
+            base.y - 0.22 * t,
+            base.z
+        );
+
+        aplicarRotacionEuler(
+            rig.cadera,
+            -0.10 * t,
+            0,
+            0
+        );
+    }
+
+    // Muslos.
+    if (rig.piernaIzquierda) {
+        aplicarRotacionEuler(
+            rig.piernaIzquierda,
+            0.42 * t,
+            0,
+            0
+        );
+    }
+
+    if (rig.piernaDerecha) {
+        aplicarRotacionEuler(
+            rig.piernaDerecha,
+            0.42 * t,
+            0,
+            0
+        );
+    }
+
+    // Pantorrillas. Se comprueba que los huesos existan
+    // antes de intentar modificarlos.
+    if (rig.pantorrillaIzquierda) {
+        aplicarRotacionEuler(
+            rig.pantorrillaIzquierda,
+            -0.72 * t,
+            0,
+            0
+        );
+    }
+
+    if (rig.pantorrillaDerecha) {
+        aplicarRotacionEuler(
+            rig.pantorrillaDerecha,
+            -0.72 * t,
+            0,
+            0
+        );
+    }
+}
+
+
+    
+
+function animarRecogerProcedural() {
+    const progreso = limitar(
+        tiempoEstado / Math.max(config.tiempoRecoger, 0.01),
+        0,
+        1
+    );
+
+    const contactoObjetivo = limitar(
+        numero(config.progresoContactoProducto, 0.78),
+        0.55,
+        0.88
+    );
+
+    const acercarse = suavizar(
+        limitar(progreso / contactoObjetivo, 0, 1)
+    );
+
+    const contacto = suavizar(
+        limitar(
+            (progreso - contactoObjetivo) /
+            Math.max(1 - contactoObjetivo, 0.12),
+            0,
+            1
+        )
+    );
+
+    const agachado = productoEsInferior ? 1 : 0;
+    const productoArriba = productoEsSuperior ? 1 : 0;
+
+    // Una sola llamada, con intensidad progresiva.
+    animarAgacharse(
+        agachado * suavizar(progreso * 1.35)
+    );
+
+    const brazoLibre = obtenerRigBrazo(
+        ladoAgarre === 'derecho' ? 'izquierdo' : 'derecho'
+    );
+
+    const signoLibre = ladoAgarre === 'izquierdo' ? 1 : -1;
+
+    if (brazoLibre) {
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            -0.12 - 0.22 * acercarse +
+                0.18 * productoArriba * acercarse,
+            0,
+            0.06 * acercarse * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            -0.12 - 0.28 * acercarse,
+            0.04 * signoLibre,
+            -0.04 * signoLibre
+        );
+
+        aplicarRotacion(
+            brazoLibre.mano,
+            EJE_X,
+            -0.08 - contacto * 0.16
+        );
+    }
+
+    aplicarRotacionEuler(
+        rig.torso,
+        0.08 * acercarse +
+            0.16 * agachado * acercarse -
+            0.12 * productoArriba * acercarse,
+        -0.10 * acercarse,
+        -0.04 * acercarse
+    );
+
+    aplicarRotacionEuler(
+        rig.cabeza,
+        0.14 + 0.12 * acercarse -
+            0.18 * productoArriba * acercarse +
+            Math.sin(tiempoEstado * 2.1) * 0.018,
+        -0.12 * acercarse,
+        0.025 * Math.sin(tiempoEstado * 1.6)
+    );
+
+    aplicarRotacion(
+        rig.cuello,
+        EJE_X,
+        0.08 + 0.08 * acercarse -
+            0.10 * productoArriba * acercarse
+    );
+}
+
+
+function esProductoSuperior(producto) {
+    if (!producto) return false;
+
+    grupo.updateMatrixWorld(true);
+
+    const posicion = new THREE.Vector3();
+    producto.getWorldPosition(posicion);
+
+    const posicionCliente = new THREE.Vector3();
+    grupo.getWorldPosition(posicionCliente);
+
+    const alturaRelativa = posicion.y - posicionCliente.y;
+
+    return alturaRelativa > 1.35;
+}
+
+function orientarHuesoHaciaDireccion(
+    hueso,
+    direccionActual,
+    direccionDeseada
+) {
+    if (
+        !hueso?.parent ||
+        !direccionActual ||
+        !direccionDeseada ||
+        direccionActual.lengthSq() < 0.000001 ||
+        direccionDeseada.lengthSq() < 0.000001
+    ) {
+        return false;
+    }
+
+    // Actualizar matrices del rig.
+    grupo.updateMatrixWorld(true);
+
+    // Normalizar las direcciones.
+    ikAgarre.direccionActual
+        .copy(direccionActual)
+        .normalize();
+
+    ikAgarre.direccionDeseada
+        .copy(direccionDeseada)
+        .normalize();
+
+    // Obtener la rotación mundial actual del hueso.
+    hueso.getWorldQuaternion(
+        ikAgarre.quaternionPadre
+    );
+
+    // Calcular la rotación necesaria en espacio mundial.
+    ikAgarre.quaternionDeltaMundo
+        .setFromUnitVectors(
+            ikAgarre.direccionActual,
+            ikAgarre.direccionDeseada
+        );
+
+    // Convertir la rotación mundial a espacio local.
+    hueso.parent.getWorldQuaternion(
+        ikAgarre.quaternionPadre
+    );
+
+    ikAgarre.quaternionPadreInversa
+        .copy(ikAgarre.quaternionPadre)
+        .invert();
+
+    ikAgarre.quaternionDeltaLocal
+        .copy(ikAgarre.quaternionPadreInversa)
+        .multiply(ikAgarre.quaternionDeltaMundo)
+        .multiply(ikAgarre.quaternionPadre);
+
+    // Aplicar la corrección a la orientación local.
+    hueso.quaternion
+        .premultiply(ikAgarre.quaternionDeltaLocal)
+        .normalize();
+
+    // Actualizar el rig.
+    grupo.updateMatrixWorld(true);
+
+    return true;
+}
+
+function resolverIKBrazo(brazo, objetivo) {
+    const hombro = brazo?.hombro;
+    const codo = brazo?.codo;
+    const mano = brazo?.mano;
+
+    if (!hombro || !codo || !mano || !objetivo) {
+        return false;
+    }
+
+    grupo.updateMatrixWorld(true);
+
+    // --------------------------------------------------
+    // 1. POSICIONES ACTUALES
+    // --------------------------------------------------
+
+    hombro.getWorldPosition(ikAgarre.hombro);
+    codo.getWorldPosition(ikAgarre.codo);
+    mano.getWorldPosition(ikAgarre.muneca);
+
+    const longitudBrazo = ikAgarre.hombro.distanceTo(
+        ikAgarre.codo
+    );
+
+    const longitudAntebrazo = ikAgarre.codo.distanceTo(
+        ikAgarre.muneca
+    );
+
+    ikAgarre.direccion.subVectors(
+        objetivo,
+        ikAgarre.hombro
+    );
+
+    const distanciaObjetivo = ikAgarre.direccion.length();
+
+    if (
+        distanciaObjetivo < 0.0001 ||
+        longitudBrazo < 0.0001 ||
+        longitudAntebrazo < 0.0001
+    ) {
+        return false;
+    }
+
+    // --------------------------------------------------
+    // 2. LIMITAR DISTANCIA DEL OBJETIVO
+    // --------------------------------------------------
+
+    const distanciaMinima = Math.abs(
+        longitudBrazo - longitudAntebrazo
+    ) + 0.005;
+
+    const distanciaMaxima =
+        longitudBrazo + longitudAntebrazo - 0.005;
+
+    const distanciaAjustada = limitar(
+        distanciaObjetivo,
+        distanciaMinima,
+        distanciaMaxima
+    );
+
+    ikAgarre.direccion.normalize();
+
+    ikAgarre.objetivo.copy(
+        ikAgarre.hombro
+    ).addScaledVector(
+        ikAgarre.direccion,
+        distanciaAjustada
+    );
+
+    // --------------------------------------------------
+    // 3. CALCULAR PLANO DE FLEXIÓN DEL CODO
+    // --------------------------------------------------
+
+    ikAgarre.codoActual.subVectors(
+        ikAgarre.codo,
+        ikAgarre.hombro
+    );
+
+    const proyeccion = ikAgarre.codoActual.dot(
+        ikAgarre.direccion
+    );
+
+    ikAgarre.perpendicular.copy(
+        ikAgarre.codoActual
+    ).addScaledVector(
+        ikAgarre.direccion,
+        -proyeccion
+    );
+
+    // Conservar la dirección natural del codo.
+    if (ikAgarre.perpendicular.lengthSq() < 0.000001) {
+        ikAgarre.perpendicular.set(
+            0,
+            0,
+            ladoAgarre === 'derecho' ? 1 : -1
+        );
+
+        ikAgarre.perpendicular.addScaledVector(
+            ikAgarre.direccion,
+            -ikAgarre.perpendicular.dot(
+                ikAgarre.direccion
+            )
+        );
+    }
+
+    if (ikAgarre.perpendicular.lengthSq() < 0.000001) {
+        ikAgarre.perpendicular.set(0, 1, 0);
+
+        ikAgarre.perpendicular.addScaledVector(
+            ikAgarre.direccion,
+            -ikAgarre.perpendicular.dot(
+                ikAgarre.direccion
+            )
+        );
+    }
+
+    ikAgarre.perpendicular.normalize();
+
+    // --------------------------------------------------
+    // 4. CALCULAR POSICIÓN OBJETIVO DEL CODO
+    // --------------------------------------------------
+
+    const distanciaCodo = (
+        longitudBrazo * longitudBrazo -
+        longitudAntebrazo * longitudAntebrazo +
+        distanciaAjustada * distanciaAjustada
+    ) / (2 * distanciaAjustada);
+
+    const alturaCodo = Math.sqrt(
+        Math.max(
+            0,
+            longitudBrazo * longitudBrazo -
+            distanciaCodo * distanciaCodo
+        )
+    );
+
+    ikAgarre.codoObjetivo.copy(
+        ikAgarre.hombro
+    ).addScaledVector(
+        ikAgarre.direccion,
+        distanciaCodo
+    ).addScaledVector(
+        ikAgarre.perpendicular,
+        alturaCodo
+    );
+
+    // --------------------------------------------------
+    // 5. ORIENTAR BRAZO SUPERIOR
+    // --------------------------------------------------
+
+    ikAgarre.direccionActual.subVectors(
+        ikAgarre.codo,
+        ikAgarre.hombro
+    );
+
+    ikAgarre.direccionDeseada.subVectors(
+        ikAgarre.codoObjetivo,
+        ikAgarre.hombro
+    );
+
+    if (!orientarHuesoHaciaDireccion(
+        hombro,
+        ikAgarre.direccionActual,
+        ikAgarre.direccionDeseada
+    )) {
+        return false;
+    }
+
+    grupo.updateMatrixWorld(true);
+
+    // --------------------------------------------------
+    // 6. ORIENTAR ANTEBRAZO HACIA LA MANO
+    // --------------------------------------------------
+
+    codo.getWorldPosition(ikAgarre.codo);
+    mano.getWorldPosition(ikAgarre.muneca);
+
+    ikAgarre.direccionActual.subVectors(
+        ikAgarre.muneca,
+        ikAgarre.codo
+    );
+
+    ikAgarre.direccionDeseada.subVectors(
+        ikAgarre.objetivo,
+        ikAgarre.codo
+    );
+
+    if (!orientarHuesoHaciaDireccion(
+        codo,
+        ikAgarre.direccionActual,
+        ikAgarre.direccionDeseada
+    )) {
+        return false;
+    }
+
+    grupo.updateMatrixWorld(true);
+
+    return true;
+}
+
+
+    function animarEmpujarCarrito() {
+        const carrito = config.carrito;
+
+        if (
+            !carrito?.siguiendo ||
+            typeof carrito.obtenerPuntoManubrio !== 'function'
+        ) {
+            return false;
+        }
+
+        const brazo = obtenerRigBrazo('izquierdo');
+        if (!brazo.hombro || !brazo.codo || !brazo.mano) return false;
+
+        aplicarRotacionEuler(brazo.mano, -0.28, 0, -0.08);
+
+        const puntoManubrio = carrito.obtenerPuntoManubrio();
+        if (
+            !puntoManubrio ||
+            !Number.isFinite(puntoManubrio.x) ||
+            !Number.isFinite(puntoManubrio.y) ||
+            !Number.isFinite(puntoManubrio.z)
+        ) {
+            return false;
+        }
+
+        grupo.updateMatrixWorld(true);
+        brazo.mano.getWorldPosition(ikAgarre.muneca);
+        ikAgarre.offsetPalmaLocal.copy(offsetPalmaIzquierdaLocal);
+        ikAgarre.offsetPalmaMundo
+            .copy(ikAgarre.offsetPalmaLocal)
+            .applyMatrix4(brazo.mano.matrixWorld)
+            .sub(ikAgarre.muneca);
+        ikAgarre.objetivoContacto.set(
+            puntoManubrio.x,
+            puntoManubrio.y,
+            puntoManubrio.z
+        );
+        ikAgarre.objetivoContacto.sub(ikAgarre.offsetPalmaMundo);
+
+        return resolverIKBrazo(brazo, ikAgarre.objetivoContacto);
+    }
+
+
+function ajustarBrazoAlProducto(
+    producto,
+    correccion = 0,
+    objetivoPalmaMundo = null,
+    progresoIK = null
+) {
+    const brazo = obtenerRigBrazo();
+
+    const hombro = brazo?.hombro;
+    const codo = brazo?.codo;
+    const mano = brazo?.mano;
+
+    if (!producto || !hombro || !codo || !mano) {
+        return false;
+    }
+
+    // --------------------------------------------------
+    // 1. ACTUALIZAR MATRICES
+    // --------------------------------------------------
+
+    grupo.updateMatrixWorld(true);
+    mano.updateWorldMatrix(true, false);
+    producto.updateMatrixWorld(true);
+
+    hombro.getWorldPosition(ikAgarre.hombro);
+    codo.getWorldPosition(ikAgarre.codo);
+    mano.getWorldPosition(ikAgarre.muneca);
+
+    cajaAgarreProducto.setFromObject(producto);
+
+    if (cajaAgarreProducto.isEmpty()) {
+        return false;
+    }
+
+    cajaAgarreProducto.getCenter(
+        ikAgarre.centroProducto
+    );
+
+    // --------------------------------------------------
+    // 2. CALCULAR PUNTO DE CONTACTO
+    // --------------------------------------------------
+
+    const puntoManual =
+        producto.userData?.puntoAgarreLocal;
+
+    if (
+        puntoManual &&
+        Number.isFinite(puntoManual.x) &&
+        Number.isFinite(puntoManual.y) &&
+        Number.isFinite(puntoManual.z)
+    ) {
+        ikAgarre.puntoContacto.set(
+            puntoManual.x,
+            puntoManual.y,
+            puntoManual.z
+        );
+
+        producto.localToWorld(
+            ikAgarre.puntoContacto
+        );
+    } else {
+        const caja = cajaAgarreProducto;
+
+        const px = THREE.MathUtils.clamp(
+            ikAgarre.muneca.x,
+            caja.min.x,
+            caja.max.x
+        );
+
+        const py = THREE.MathUtils.clamp(
+            ikAgarre.muneca.y,
+            caja.min.y,
+            caja.max.y
+        );
+
+        const pz = THREE.MathUtils.clamp(
+            ikAgarre.muneca.z,
+            caja.min.z,
+            caja.max.z
+        );
+
+        const candidatos = [
+            new THREE.Vector3(caja.min.x, py, pz),
+            new THREE.Vector3(caja.max.x, py, pz),
+            new THREE.Vector3(px, caja.min.y, pz),
+            new THREE.Vector3(px, caja.max.y, pz),
+            new THREE.Vector3(px, py, caja.min.z),
+            new THREE.Vector3(px, py, caja.max.z)
+        ];
+
+        let menorDistancia = Infinity;
+
+        for (const candidato of candidatos) {
+            const distancia =
+                candidato.distanceToSquared(
+                    ikAgarre.muneca
+                );
+
+            if (distancia < menorDistancia) {
+                menorDistancia = distancia;
+
+                ikAgarre.puntoContacto.copy(
+                    candidato
+                );
+            }
+        }
+    }
+
+    // --------------------------------------------------
+    // 3. NORMAL DE CONTACTO
+    // --------------------------------------------------
+
+    const normalManual =
+        producto.userData?.normalAgarreLocal;
+
+    if (
+        normalManual &&
+        Number.isFinite(normalManual.x) &&
+        Number.isFinite(normalManual.y) &&
+        Number.isFinite(normalManual.z)
+    ) {
+        ikAgarre.normalContacto
+            .set(
+                normalManual.x,
+                normalManual.y,
+                normalManual.z
+            )
+            .transformDirection(producto.matrixWorld);
+    } else {
+        ikAgarre.normalContacto.subVectors(
+            ikAgarre.puntoContacto,
+            ikAgarre.centroProducto
+        );
+    }
+
+    if (
+        ikAgarre.normalContacto.lengthSq() <
+        0.000001
+    ) {
+        ikAgarre.normalContacto.subVectors(
+            ikAgarre.hombro,
+            ikAgarre.centroProducto
+        );
+    }
+
+    if (
+        ikAgarre.normalContacto.lengthSq() <
+        0.000001
+    ) {
+        ikAgarre.normalContacto.set(0, 0, 1);
+    }
+
+    ikAgarre.normalContacto.normalize();
+
+    // --------------------------------------------------
+    // 4. OFFSET DE LA PALMA
+    // --------------------------------------------------
+
+    ikAgarre.offsetPalmaLocal.copy(
+        ladoAgarre === 'izquierdo'
+            ? offsetPalmaIzquierdaLocal
+            : offsetPalmaLocal
+    );
+
+    const offsetPalmaManual =
+        producto.userData?.offsetPalmaLocal;
+
+    if (
+        offsetPalmaManual &&
+        Number.isFinite(offsetPalmaManual.x) &&
+        Number.isFinite(offsetPalmaManual.y) &&
+        Number.isFinite(offsetPalmaManual.z)
+    ) {
+        ikAgarre.offsetPalmaLocal.set(
+            offsetPalmaManual.x,
+            offsetPalmaManual.y,
+            offsetPalmaManual.z
+        );
+    }
+
+    grupo.updateMatrixWorld(true);
+    mano.updateWorldMatrix(true, false);
+
+    ikAgarre.offsetPalmaMundo
+        .copy(ikAgarre.offsetPalmaLocal)
+        .applyMatrix4(mano.matrixWorld)
+        .sub(ikAgarre.muneca);
+
+    // --------------------------------------------------
+    // 5. OBJETIVO DE CONTACTO
+    // --------------------------------------------------
+
+    const distanciaContacto = limitar(
+        numero(
+            producto.userData?.distanciaContactoMano,
+            numero(config.distanciaContactoMano, 0.03)
+        ),
+        0,
+        0.12
+    );
+
+    if (objetivoPalmaMundo) {
+        ikAgarre.objetivoContacto.copy(
+            objetivoPalmaMundo
+        );
+    } else {
+        ikAgarre.objetivoContacto
+            .copy(ikAgarre.puntoContacto)
+            .addScaledVector(
+                ikAgarre.normalContacto,
+                distanciaContacto
+            );
+    }
+
+    // --------------------------------------------------
+    // 6. PROGRESO DE EXTENSIÓN
+    // --------------------------------------------------
+
+    const progreso = limitar(
+        tiempoEstado /
+        Math.max(
+            numero(config.tiempoRecoger, 1.1),
+            0.01
+        ),
+        0,
+        1
+    );
+
+    const progresoExtension = limitar(
+        numero(
+            config.progresoContactoProducto,
+            0.78
+        ),
+        0.55,
+        0.95
+    );
+
+    const pesoIK = progresoIK === null
+        ? suavizar(
+            limitar(
+                progreso / progresoExtension,
+                0,
+                1
+            )
+        )
+        : suavizar(
+            limitar(progresoIK, 0, 1)
+        );
+
+    if (pesoIK <= 0.0001) {
+        return false;
+    }
+
+    // --------------------------------------------------
+    // 7. CALCULAR OBJETIVO DE LA MUÑECA
+    // --------------------------------------------------
+
+    const objetivoMuneca = new THREE.Vector3()
+        .copy(ikAgarre.objetivoContacto)
+        .sub(ikAgarre.offsetPalmaMundo);
+
+    // Interpolar desde la posición actual hasta el producto.
+    objetivoMuneca.lerp(
+        ikAgarre.muneca,
+        1 - pesoIK
+    );
+
+    // --------------------------------------------------
+    // 8. RESOLVER IK SIN RECURSIVIDAD
+    // --------------------------------------------------
+
+    const agarreResuelto = resolverIKBrazo(
+        brazo,
+        objetivoMuneca
+    );
+
+    if (!agarreResuelto) {
+        return false;
+    }
+
+    // --------------------------------------------------
+    // 9. ACTUALIZAR POSICIÓN REAL DE LA MANO
+    // --------------------------------------------------
+
+    grupo.updateMatrixWorld(true);
+    mano.updateWorldMatrix(true, false);
+
+    mano.getWorldPosition(
+        ikAgarre.muneca
+    );
+
+    ikAgarre.offsetPalmaMundo
+        .copy(ikAgarre.offsetPalmaLocal)
+        .applyMatrix4(mano.matrixWorld)
+        .sub(ikAgarre.muneca);
+
+    const posicionPalma = ikAgarre.muneca
+        .clone()
+        .add(ikAgarre.offsetPalmaMundo);
+
+    // --------------------------------------------------
+    // 10. COMPROBAR CONTACTO
+    // --------------------------------------------------
+
+    const errorContacto = posicionPalma.distanceTo(
+        ikAgarre.objetivoContacto
+    );
+
+    const toleranciaContacto = limitar(
+        numero(config.toleranciaAgarre, 0.10),
+        0.04,
+        0.18
+    );
+
+    return errorContacto <= toleranciaContacto;
+}
+
+    function animarInspeccionarProcedural() {
+        const entrada = suavizar(Math.min(tiempoEstado / 0.55, 1));
+        const salida = suavizar(Math.min((config.tiempoInspeccionar - tiempoEstado) / 0.45, 1));
+        const levantar = entrada * salida;
+        const giroProducto = Math.sin(tiempoEstado * 1.22) * 0.09;
+        const balanceoProducto = Math.sin(tiempoEstado * 2.05) * 0.035;
+        const oscilarCabeza = Math.sin(tiempoEstado * 1.18) * 0.032;
+        const respiracion = Math.sin(tiempoEstado * 1.75) * 0.012;
+
+        const brazoActivo = obtenerRigBrazo();
+        const brazoLibre = obtenerRigBrazo(
+            ladoAgarre === 'derecho' ? 'izquierdo' : 'derecho'
+        );
+        const signoActivo = ladoAgarre === 'izquierdo' ? -1 : 1;
+        const signoLibre = -signoActivo;
+
+        aplicarRotacionEuler(
+            brazoActivo.hombro,
+            -1.08 * levantar + giroProducto,
+            0.12 * levantar * signoActivo,
+            0.10 * Math.sin(tiempoEstado) * signoActivo
+        );
+        aplicarRotacionEuler(
+            brazoActivo.codo,
+            -0.92 * levantar + balanceoProducto,
+            -0.15 * levantar * signoActivo,
+            -0.18 * signoActivo
+        );
+        aplicarRotacionEuler(
+            brazoActivo.mano,
+            -0.28 + giroProducto,
+            balanceoProducto * 0.8 * signoActivo,
+            0.15 * signoActivo
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            -0.76 * levantar,
+            -0.10 * levantar * signoLibre,
+            -0.08 * signoLibre
+        );
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            -0.82 * levantar,
+            0.08 * signoLibre,
+            0.12 * signoLibre
+        );
+        aplicarRotacion(
+            brazoLibre.mano,
+            EJE_X,
+            -0.22 + giroProducto * 0.35
+        );
+
+        aplicarRotacionEuler(rig.cabeza, 0.20 + oscilarCabeza,
+            Math.sin(tiempoEstado * 0.48) * 0.16,
+            Math.sin(tiempoEstado * 0.62) * 0.035);
+        aplicarRotacion(rig.cuello, EJE_X, 0.08 + respiracion);
+        aplicarRotacionEuler(rig.torso, respiracion * 0.8, 0, Math.sin(tiempoEstado * 0.55) * 0.018);
+
+        if (productoEsInferior) {
+            animarAgacharse((1 - suavizar(tiempoEstado * 1.5)) * levantar);
+        }
+
+        mezclarPoseAgarreInspeccion();
+    }
+function mezclarPoseAgarreInspeccion() {
+    if (!poseAgarreInspeccion.activa) return;
+
+    const duracion = Math.max(
+        numero(poseAgarreInspeccion.duracion, 0.38),
+        0.05
+    );
+
+    const progreso = suavizar(
+        limitar(tiempoEstado / duracion, 0, 1)
+    );
+
+    // Huesos que controla exclusivamente el IK.
+    const huesosBrazo = [
+        rig.brazoIzquierdo,
+        rig.antebrazoIzquierdo,
+        rig.manoIzquierda,
+        rig.brazoDerecho,
+        rig.antebrazoDerecho,
+        rig.manoDerecha
+    ];
+
+    for (const pose of poseAgarreInspeccion.huesos) {
+        if (!pose.hueso) continue;
+
+        // No modificar los brazos ni las manos.
+        if (huesosBrazo.includes(pose.hueso)) {
+            continue;
+        }
+
+        // Mantener un objetivo fijo, sin recalcularlo
+        // a partir de la rotación actual en cada fotograma.
+        pose.hueso.quaternion.slerpQuaternions(
+            pose.inicial,
+            pose.objetivo,
+            progreso
+        );
+    }
+
+    if (progreso >= 1) {
+        poseAgarreInspeccion.activa = false;
+        poseAgarreInspeccion.huesos.length = 0;
+    }
+
+    grupo.updateMatrixWorld(true);
+}
+
+    
+    
+    
+function prepararDepositoProducto() {
+
+    const producto = productoEnMano;
+    const mano = obtenerRigBrazo()?.mano;
+
+    if (
+        !producto ||
+        !mano ||
+        typeof config.carrito?.obtenerPuntoDeposito !== 'function'
+    ) {
+        return false;
+    }
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+
+    cajaTemporal.setFromObject(producto);
+
+    if (cajaTemporal.isEmpty()) return false;
+
+    cajaTemporal.getCenter(vectorTemporal);
+    cajaTemporal.getSize(tamanoTemporal);
+
+    animacionDeposito.alturaProducto = tamanoTemporal.y;
+
+    // Capturar el centro del producto respecto a la palma.
+    mano.worldToLocal(vectorTemporal);
+
+    animacionDeposito.centroDesdePalmaLocal
+        .copy(vectorTemporal)
+        .sub(ikAgarre.offsetPalmaLocal);
+
+    // Capturar la posición mundial inicial de la mano.
+    mano.getWorldPosition(
+        animacionDeposito.palmaInicial
+    );
+
+    // Obtener el centro final previsto del producto.
+    const puntoDeposito =
+        config.carrito.obtenerPuntoDeposito(
+            undefined,
+            producto
+        );
+
+    if (
+        !puntoDeposito?.isVector3 ||
+        !Number.isFinite(puntoDeposito.x) ||
+        !Number.isFinite(puntoDeposito.y) ||
+        !Number.isFinite(puntoDeposito.z)
+    ) {
+        return false;
+    }
+
+    animacionDeposito.objetivoCentro.copy(
+        puntoDeposito
+    );
+
+    // Calcular el desplazamiento entre la muñeca
+    // y el centro del producto.
+    mano.getWorldPosition(ikAgarre.muneca);
+
+    ikAgarre.offsetPalmaMundo
+        .copy(animacionDeposito.centroDesdePalmaLocal)
+        .applyMatrix4(mano.matrixWorld)
+        .sub(ikAgarre.muneca);
+
+    // La palma debe llegar al punto que permite
+    // colocar el centro del producto en la cesta.
+    animacionDeposito.palmaFinal
+        .copy(animacionDeposito.objetivoCentro)
+        .sub(ikAgarre.offsetPalmaMundo);
+
+    animacionDeposito.preparada = true;
+
+    return true;
+}
+
+  function animarDepositoProducto(progreso = 0) {
+
+    const producto = productoEnMano;
+
+    if (!producto) return false;
+
+    if (!animacionDeposito.preparada) {
+        if (!prepararDepositoProducto()) {
+            return false;
+        }
+    }
+
+    progreso = suavizar(
+        limitar(progreso, 0, 1)
+    );
+
+    grupo.updateMatrixWorld(true);
+
+    // Interpolar la palma desde su posición original
+    // hasta el punto de depósito.
+    animacionDeposito.objetivoPalma.lerpVectors(
+        animacionDeposito.palmaInicial,
+        animacionDeposito.palmaFinal,
+        progreso
+    );
+
+    animacionDeposito.progresoDescenso = progreso;
+
+    return ajustarBrazoAlProducto(
+        producto,
+        0,
+        animacionDeposito.objetivoPalma,
+        progreso
+    );
+}
+
+function liberarProductoEnCarrito() {
+
+    if (animacionDeposito.liberado) {
+        return true;
+    }
+
+    const producto = productoEnMano;
+
+    if (!producto) {
+        animacionDeposito.error = true;
+        return false;
+    }
+
+    const datos = producto.userData ?? {};
+
+    const compra = {
+        objeto: producto,
+
+        nombre:
+            datos.nombre ??
+            producto.name ??
+            'Producto',
+
+        codigo: datos.codigo ?? '',
+
+        precio: numero(datos.precio, 0)
+    };
+
+    let agregado = false;
+
+    try {
+
+        if (config.carrito?.agregarProducto) {
+
+            agregado = config.carrito.agregarProducto(
+                producto,
+                {
+                    nombre: compra.nombre,
+                    precio: compra.precio,
+                    cantidad: 1
+                }
+            ) === true;
+
+        } else if (config.carrito?.agregar) {
+
+            agregado =
+                config.carrito.agregar(producto) === true;
+        }
+
+    } catch (error) {
+
+        console.error(
+            `[CLIENTE ${id}] Error liberando producto:`,
+            error
+        );
+    }
+
+    if (!agregado) {
+
+        console.error(
+            `[CLIENTE ${id}] No se pudo depositar ${compra.nombre}.`
+        );
+
+        animacionDeposito.error = true;
+
+        return false;
+    }
+
+    // Registrar que el producto ya pertenece al carrito.
+    compra.objeto.userData.enCarrito = true;
+    compra.objeto.userData.reservado = false;
+
+    delete compra.objeto.userData.reservadoPor;
+
+    animacionDeposito.compra = compra;
+    animacionDeposito.liberado = true;
+
+    // A partir de aquí el producto ya no depende de la mano.
+    productoEnMano = null;
+
+    productoOriginal = null;
+
+    animacionAgarre.activa = false;
+    animacionAgarre.tiempo = 0;
+
+    animacionProducto.activa = false;
+    animacionProducto.tipo = null;
+    animacionProducto.fase = null;
+
+    liberarReserva();
+
+    console.log(
+        `[CLIENTE ${id}] Producto liberado en carrito: ${compra.nombre}`
+    );
+
+    return true;
+}
+
+function animarGuardarProcedural() {
+
+    const duracion = Math.max(
+        numero(config.tiempoGuardar, 2.0),
+        0.1
+    );
+
+    const progreso = limitar(
+        tiempoEstado / duracion,
+        0,
+        1
+    );
+
+    const brazoActivo = obtenerRigBrazo();
+    const brazoLibre = obtenerRigBrazo(
+        ladoAgarre === 'derecho'
+            ? 'izquierdo'
+            : 'derecho'
+    );
+
+    if (!brazoActivo?.mano || !brazoLibre) {
+        animacionDeposito.error = true;
+        return;
+    }
+
+    const signoActivo =
+        ladoAgarre === 'izquierdo' ? -1 : 1;
+
+    const signoLibre = -signoActivo;
+
+    const fasePreparacion = 0.16;
+    const faseDescenso = 0.56;
+    const faseLiberacion = 0.10;
+    const faseRetirada = 0.18;
+
+    const inicioDescenso = fasePreparacion;
+
+    const inicioLiberacion =
+        fasePreparacion + faseDescenso;
+
+    const inicioRetirada =
+        inicioLiberacion + faseLiberacion;
+
+    // =========================================
+    // PREPARAR
+    // =========================================
+
+    if (progreso < inicioDescenso) {
+
+        animacionDeposito.fase = 'PREPARAR';
+
+        if (!animacionDeposito.preparada) {
+
+            if (!prepararDepositoProducto()) {
+                animacionDeposito.error = true;
+                return;
+            }
+        }
+
+        const p = suavizar(
+            progreso / fasePreparacion
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            -0.50,
+            0.05 * signoLibre,
+            -0.08 * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            -0.58,
+            0,
+            -0.04 * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            rig.torso,
+            0.08 + p * 0.07,
+            0,
+            -0.025
+        );
+
+        aplicarRotacionEuler(
+            rig.cabeza,
+            0.14 + p * 0.08,
+            -0.08,
+            0
+        );
+
+        return;
+    }
+
+    // =========================================
+    // DESCENDER
+    // =========================================
+
+    if (progreso < inicioLiberacion) {
+
+        animacionDeposito.fase = 'DESCENDER';
+
+        const progresoDescenso = suavizar(
+            limitar(
+                (progreso - inicioDescenso) /
+                faseDescenso,
+                0,
+                1
+            )
+        );
+
+        animarDepositoProducto(
+            progresoDescenso
+        );
+
+        const inclinacion = progresoDescenso;
+
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            -0.50 + inclinacion * 0.12,
+            0.05 * signoLibre,
+            -0.08 * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            -0.58 + inclinacion * 0.10,
+            0,
+            -0.04 * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            rig.torso,
+            0.15 + inclinacion * 0.12,
+            0,
+            -0.025
+        );
+
+        aplicarRotacionEuler(
+            rig.cabeza,
+            0.20 + inclinacion * 0.08,
+            -0.08,
+            0
+        );
+
+        return;
+    }
+
+    // =========================================
+    // LIBERAR PRODUCTO
+    // =========================================
+
+    if (progreso < inicioRetirada) {
+
+        animacionDeposito.fase = 'LIBERAR';
+
+        // Mantener el brazo en el punto de depósito
+        // durante el breve instante de liberación.
+        if (!animacionDeposito.liberado) {
+
+            if (!liberarProductoEnCarrito()) {
+                return;
+            }
+        }
+
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            -0.38,
+            0,
+            -0.05 * signoLibre
+        );
+
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            -0.48,
+            0,
+            0
+        );
+
+        aplicarRotacionEuler(
+            rig.torso,
+            0.25,
+            0,
+            -0.02
+        );
+
+        return;
+    }
+
+    // =========================================
+    // RETIRAR BRAZO
+    // =========================================
+
+    animacionDeposito.fase = 'RETIRAR';
+
+    const retirada = suavizar(
+        limitar(
+            (progreso - inicioRetirada) /
+            faseRetirada,
+            0,
+            1
+        )
+    );
+
+    aplicarRotacionEuler(
+        brazoActivo.hombro,
+        THREE.MathUtils.lerp(
+            -0.92,
+            -0.25,
+            retirada
+        ),
+        -0.08 * signoActivo,
+        0.08 * signoActivo * (1 - retirada)
+    );
+
+    aplicarRotacionEuler(
+        brazoActivo.codo,
+        THREE.MathUtils.lerp(
+            -0.55,
+            -0.12,
+            retirada
+        ),
+        0,
+        0.05 * signoActivo * (1 - retirada)
+    );
+
+    aplicarRotacionEuler(
+        brazoActivo.mano,
+        THREE.MathUtils.lerp(
+            -0.25,
+            0,
+            retirada
+        ),
+        0,
+        0.10 * signoActivo * (1 - retirada)
+    );
+
+    aplicarRotacionEuler(
+        brazoLibre.hombro,
+        THREE.MathUtils.lerp(
+            -0.38,
+            -0.12,
+            retirada
+        ),
+        0,
+        -0.05 * signoLibre * (1 - retirada)
+    );
+
+    aplicarRotacionEuler(
+        brazoLibre.codo,
+        THREE.MathUtils.lerp(
+            -0.48,
+            -0.12,
+            retirada
+        ),
+        0,
+        0
+    );
+
+    aplicarRotacionEuler(
+        rig.torso,
+        THREE.MathUtils.lerp(
+            0.25,
+            0,
+            retirada
+        ),
+        0,
+        0
+    );
+
+    aplicarRotacionEuler(
+        rig.cabeza,
+        THREE.MathUtils.lerp(
+            0.28,
+            0,
+            retirada
+        ),
+        -0.08 * (1 - retirada),
+        0
+    );
+
+    if (progreso >= 1) {
+
+        animacionDeposito.fase = 'COMPLETADO';
+
+        animacionDeposito.completada = true;
+    }
+}
+
+    
+    
+    
+
+    function animarDevolverProcedural() {
+        const t = suavizar(
+            tiempoEstado / Math.max(config.tiempoDevolver, 0.01)
+        );
+
+        if (productoEsInferior) {
+            animarAgacharse(1 - t * 0.25);
+        }
+
+        const brazoActivo = obtenerRigBrazo();
+        const brazoLibre = obtenerRigBrazo(
+            ladoAgarre === 'derecho' ? 'izquierdo' : 'derecho'
+        );
+        const signoActivo = ladoAgarre === 'izquierdo' ? -1 : 1;
+        const signoLibre = -signoActivo;
+
+        aplicarRotacionEuler(brazoActivo.hombro,
+            THREE.MathUtils.lerp(-1.05, -0.12, t),
+            THREE.MathUtils.lerp(-0.08, 0, t) * signoActivo,
+            0.08 * signoActivo);
+        aplicarRotacionEuler(brazoActivo.codo,
+            THREE.MathUtils.lerp(-0.82, -0.08, t),
+            -0.06 * signoActivo, -0.04 * signoActivo);
+        aplicarRotacion(brazoActivo.mano, EJE_X,
+            THREE.MathUtils.lerp(-0.55, -0.08, t));
+
+        aplicarRotacionEuler(
+            brazoLibre.hombro,
+            THREE.MathUtils.lerp(-0.48, -0.1, t),
+            0,
+            -0.08 * signoLibre
+        );
+        aplicarRotacionEuler(
+            brazoLibre.codo,
+            THREE.MathUtils.lerp(-0.58, -0.1, t),
+            0,
+            0.04 * signoLibre
+        );
+
+        aplicarRotacionEuler(rig.cabeza,
+            THREE.MathUtils.lerp(0.18, 0.03, t),
+            -0.08 * (1 - t),
+            Math.sin(tiempoEstado * 1.9) * 0.025);
+    }
+
+    
+    
+    
+
+    function animarPagarProcedural() {
+        const duracion = Math.max(
+            numero(config.tiempoPago, 3.0),
+            0.1
+        );
+        const progreso = limitar(tiempoEstado / duracion, 0, 1);
+        const extender = suavizar(limitar(progreso / 0.30, 0, 1));
+        const retirar = suavizar(limitar((progreso - 0.78) / 0.22, 0, 1));
+        const alcance = extender * (1 - retirar);
+        const prepararTarjeta =
+            suavizar(limitar(progreso / 0.18, 0, 1)) *
+            (1 - retirar);
+        const pausa = suavizar(
+            limitar((progreso - 0.44) / 0.12, 0, 1)
+        ) * (1 - retirar);
+
+        const toqueUno = Math.exp(
+            -Math.pow((progreso - 0.34) / 0.025, 2)
+        );
+        const toqueDos = Math.exp(
+            -Math.pow((progreso - 0.41) / 0.025, 2)
+        );
+        const toque = (toqueUno + toqueDos) * alcance;
+        const respiracion = Math.sin(tiempoEstado * 2.1) * 0.012;
+        const cambioPeso = Math.sin(tiempoEstado * 1.35) * 0.018;
+        const asentir = Math.sin(tiempoEstado * 4.2) * pausa * 0.025;
+
+        aplicarRotacionEuler(
+            rig.brazoDerecho,
+            -0.78 * alcance + 0.03 * toque,
+            -0.10 * alcance,
+            0.08 * alcance
+        );
+        aplicarRotacionEuler(
+            rig.antebrazoDerecho,
+            -0.48 * alcance - 0.035 * toque,
+            -0.08 * alcance,
+            -0.06
+        );
+        aplicarRotacionEuler(
+            rig.manoDerecha,
+            -0.12 * alcance + 0.12 * toque,
+            0.05 * alcance,
+            0.08 * alcance
+        );
+
+        aplicarRotacionEuler(
+            rig.brazoIzquierdo,
+            -0.38 * prepararTarjeta,
+            0.12 * prepararTarjeta,
+            -0.10 * prepararTarjeta
+        );
+        aplicarRotacionEuler(
+            rig.antebrazoIzquierdo,
+            -0.62 * prepararTarjeta,
+            0.08 * prepararTarjeta,
+            0.05
+        );
+        aplicarRotacion(
+            rig.manoIzquierda,
+            EJE_X,
+            -0.16 * prepararTarjeta + toque * 0.04
+        );
+
+        aplicarRotacionEuler(
+            rig.cabeza,
+            0.08 + 0.06 * alcance + asentir,
+            -0.08 * alcance,
+            Math.sin(tiempoEstado * 1.1) * 0.025
+        );
+        aplicarRotacion(rig.cuello, EJE_X, 0.04 + respiracion);
+        aplicarRotacionEuler(
+            rig.torso,
+            0.045 * alcance + respiracion * 0.7,
+            0,
+            cambioPeso * alcance
+        );
+        aplicarRotacionEuler(
+            rig.cadera,
+            -0.015 * alcance + respiracion * 0.3,
+            0,
+            -cambioPeso * alcance
+        );
+    }
+
+    
+    
+    
+
+function actualizarAnimacionAgarre(delta) {
+    if (
+        !animacionAgarre.activa ||
+        !productoEnMano
+    ) {
+        return false;
+    }
+
+    const producto = productoEnMano;
+
+    animacionAgarre.tiempo += delta;
+
+    const duracion = Math.max(
+        animacionAgarre.duracion,
+        0.01
+    );
+
+    const t = limitar(
+        animacionAgarre.tiempo / duracion,
+        0,
+        1
+    );
+
+    const suave = suavizar(t);
+
+    // Desplazar el producto desde el contacto
+    // hasta la posición correcta en la palma.
+    producto.position.lerpVectors(
+        animacionAgarre.posicionInicial,
+        animacionAgarre.posicionFinal,
+        suave
+    );
+
+    producto.quaternion.slerpQuaternions(
+        animacionAgarre.quaternionInicial,
+        animacionAgarre.quaternionFinal,
+        suave
+    );
+
+    producto.scale.lerpVectors(
+        animacionAgarre.escalaInicial,
+        animacionAgarre.escalaFinal,
+        suave
+    );
+
+    if (t >= 1) {
+        producto.position.copy(
+            animacionAgarre.posicionFinal
+        );
+
+        producto.quaternion.copy(
+            animacionAgarre.quaternionFinal
+        );
+
+        producto.scale.copy(
+            animacionAgarre.escalaFinal
+        );
+
+        animacionAgarre.activa = false;
+        animacionAgarre.tiempo = 0;
+
+        grupo.updateMatrixWorld(true);
+
+        return true;
+    }
+
+    return false;
+}
+
+
+function actualizarAnimacionProducto(delta) {
+    if (
+        !animacionProducto.activa ||
+        !productoEnMano ||
+        animacionProducto.fase !== 'ALCANCE'
+    ) {
+        return false;
+    }
+
+    const producto = productoEnMano;
+    const brazo = obtenerRigBrazo();
+    const mano = brazo?.mano;
+
+    if (!mano || producto.parent !== mano) {
+        finalizarDevolucionProducto();
+        return true;
+    }
+
+    animacionProducto.tiempo += delta;
+
+    const duracion = Math.max(
+        numero(animacionProducto.duracion, 1.4),
+        0.01
+    );
+
+    const t = limitar(
+        animacionProducto.tiempo / duracion,
+        0,
+        1
+    );
+
+    const suave = suavizar(t);
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+
+    // Interpolar la posición mundial deseada del pivote.
+    const posicionProductoObjetivo =
+        animacionProducto.posicionTemporal.lerpVectors(
+            animacionProducto.posicionInicial,
+            animacionProducto.posicionFinal,
+            suave
+        );
+
+    // Obtener el origen mundial de la mano.
+    const posicionMano = new THREE.Vector3();
+
+    mano.getWorldPosition(posicionMano);
+
+    // Calcular el desplazamiento completo del pivote
+    // del producto respecto al origen de la mano.
+    const posicionPivoteMundo =
+        producto.position.clone().applyMatrix4(
+            mano.matrixWorld
+        );
+
+    const desplazamientoPivote =
+        posicionPivoteMundo.sub(posicionMano);
+
+    // La muñeca debe llegar a una posición que permita
+    // que el pivote del producto alcance su destino.
+    const objetivoMano =
+        posicionProductoObjetivo.clone().sub(
+            desplazamientoPivote
+        );
+
+    // Resolver el brazo para transportar el producto.
+    resolverIKBrazo(
+        brazo,
+        objetivoMano
+    );
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+
+    // Interpolar la orientación mundial del producto.
+    const quaternionProductoObjetivo =
+        animacionProducto.quaternionTemporal
+            .slerpQuaternions(
+                animacionProducto.quaternionInicial,
+                animacionProducto.quaternionFinal,
+                suave
+            );
+
+    const quaternionMano = new THREE.Quaternion();
+
+    mano.getWorldQuaternion(quaternionMano);
+
+    // Convertir la orientación mundial deseada
+    // a coordenadas locales de la mano.
+    animacionProducto.quaternionPadreTemporal
+        .copy(quaternionMano)
+        .invert();
+
+    producto.quaternion
+        .copy(animacionProducto.quaternionPadreTemporal)
+        .multiply(quaternionProductoObjetivo)
+        .normalize();
+
+    // Interpolar también la escala mundial.
+    const escalaInicial = animacionProducto.escalaInicial;
+    const escalaFinal = animacionProducto.escalaFinal;
+
+    const escalaObjetivo = new THREE.Vector3().lerpVectors(
+        escalaInicial,
+        escalaFinal,
+        suave
+    );
+
+    const escalaMano = new THREE.Vector3();
+
+    mano.getWorldScale(escalaMano);
+
+    producto.scale.set(
+        escalaObjetivo.x / Math.max(Math.abs(escalaMano.x), 0.0001),
+        escalaObjetivo.y / Math.max(Math.abs(escalaMano.y), 0.0001),
+        escalaObjetivo.z / Math.max(Math.abs(escalaMano.z), 0.0001)
+    );
+
+    grupo.updateMatrixWorld(true);
+
+    if (t >= 1) {
+        finalizarDevolucionProducto();
+        return true;
+    }
+
+    return false;
+}
+
+function finalizarDevolucionProducto() {
+    if (!productoEnMano || !productoOriginal) {
+        animacionProducto.activa = false;
+        animacionProducto.tipo = null;
+        animacionProducto.fase = null;
+
+        animacionAgarre.activa = false;
+        animacionAgarre.tiempo = 0;
+
+        return;
+    }
+
+    const producto = productoEnMano;
+    const original = productoOriginal;
+    const tipoDevolucion = animacionProducto.tipo;
+productoReubicadoPendiente =
+    tipoDevolucion === 'REUBICAR' &&
+    tienePosicionClienteAntesDeReubicar;
+    animacionAgarre.activa = false;
+    animacionAgarre.tiempo = 0;
+
+    // Separar el producto de la mano.
+    producto.parent?.remove(producto);
+
+    // Recuperar su padre original o el padre
+    // correspondiente al nuevo estante.
+    if (original.parent) {
+        original.parent.add(producto);
+    } else {
+        scene.add(producto);
+    }
+
+    // Colocar el producto en su transformación final.
+    producto.position.copy(original.posicion);
+    producto.quaternion.copy(original.quaternion);
+    producto.scale.copy(original.escala);
+    producto.visible = original.visible;
+
+    // Registrar la reubicación cuando corresponda.
+    if (tipoDevolucion === 'REUBICAR') {
+        producto.userData.reubicado = true;
+
+        producto.userData.rackAnterior =
+            original.rackAnterior ?? null;
+
+        producto.userData.rackNuevo =
+            original.rackNuevo ?? null;
+
+        producto.userData.rackReubicado =
+            original.rackNuevo ?? null;
+    } else {
+        producto.userData.reubicado = false;
+    }
+
+    // Liberar la reserva del producto.
+    producto.userData.reservado = false;
+    delete producto.userData.reservadoPor;
+
+    producto.updateMatrixWorld(true);
+
+    // Limpiar referencias.
+    productoEnMano = null;
+    productoOriginal = null;
+
+    animacionProducto.activa = false;
+    animacionProducto.tipo = null;
+    animacionProducto.fase = null;
+    animacionProducto.tiempo = 0;
+
+    liberarReserva();
+}
+
+
+    function cargarModelo() {
+        loaderGLTF.load(
+            config.modelo,
+
+            gltf => {
+                if (eliminado) return;
+
+                modelo = gltf.scene;
+                modelo.name = `MODELO_CLIENTE_${id}`;
+
+                modelo.scale.setScalar(config.escala);
+
+                modelo.traverse(obj => {
+                    if (!obj.isMesh) return;
+
+                    obj.castShadow = false;
+                    obj.receiveShadow = false;
+
+                    if (obj.material) {
+                        obj.material.side = THREE.FrontSide;
+                    }
+                });
+
+                const caja = new THREE.Box3().setFromObject(modelo);
+                const centro = new THREE.Vector3();
+
+                caja.getCenter(centro);
+
+                modelo.position.x -= centro.x;
+                modelo.position.z -= centro.z;
+                modelo.position.y -= caja.min.y;
+
+                grupo.add(modelo);
+
+                detectarHuesos(modelo);
+                actualizarRig();
+
+                if (!opciones.offsetPalmaProducto) {
+                    calcularOffsetPalmaDesdeEsqueleto(
+                        rig.manoDerecha,
+                        offsetPalmaLocal
+                    );
+                    calcularOffsetPalmaDesdeEsqueleto(
+                        rig.manoIzquierda,
+                        offsetPalmaIzquierdaLocal
+                    );
+                }
+
+                if (gltf.animations?.length) {
+                    mixer = new THREE.AnimationMixer(modelo);
+
+                    const caminar = gltf.animations.find(clip =>
+                        /walk|walking|caminar/i.test(clip.name)
+                    );
+
+                    const reposo = gltf.animations.find(clip =>
+                        /idle|stand|rest|reposo/i.test(clip.name)
+                    );
+
+                    if (caminar) {
+                        accionCaminar = mixer.clipAction(caminar);
+                        accionCaminar.setEffectiveTimeScale(
+                            config.velocidadAnimacionGLB
+                        );
+                    }
+
+                    if (reposo) {
+                        accionReposo = mixer.clipAction(reposo);
+                        accionReposo.play();
+                    }
+                }
+
+                cargado = true;
+
+                console.log(
+                    `[CLIENTE ${id}] Modelo cargado: ${config.modelo}`
+                );
+            },
+
+            undefined,
+
+            error => {
+                console.error(
+                    `[CLIENTE ${id}] Error cargando modelo:`,
+                    error
+                );
+            }
+        );
+    }
+
+    cargarModelo();
+
+    
+    
+    
+
+function actualizarSeguimientoCarrito() {
+    const carrito = config.carrito;
+
+    if (!carrito || !grupo) return;
+
+    const estadosSeguimiento = [
+        ESTADOS.ENTRANDO,
+        ESTADOS.ACERCANDO,
+        ESTADOS.RUTA,
+        ESTADOS.CAJA,
+        ESTADOS.REGRESANDO
+    ];
+
+    const estadosJuntoAlCliente = [
+        ESTADOS.RECOGIENDO,
+        ESTADOS.INSPECCIONANDO,
+        ESTADOS.DEVOLVIENDO
+    ];
+
+    console.log('[SOLICITUD DE SEGUIMIENTO]', {
+        estadoActual: estado,
+        recogiendo: ESTADOS.RECOGIENDO,
+        inspeccionando: ESTADOS.INSPECCIONANDO,
+        devolviendo: ESTADOS.DEVOLVIENDO,
+        ladoAgarre,
+        esSeguimientoNormal: estadosSeguimiento.includes(estado),
+        esEstacionamientoLateral:
+            estadosJuntoAlCliente.includes(estado)
+    });
+
+    // SEGUIMIENTO NORMAL
+    if (estadosSeguimiento.includes(estado)) {
+        console.trace('[ORDEN DE SEGUIMIENTO NORMAL]');
+
+        carrito.seguirObjetivo(grupo, 0.95, 0);
+        return;
+    }
+
+    // ESTACIONAMIENTO LATERAL
+    if (estadosJuntoAlCliente.includes(estado)) {
+        const distanciaLateral = 1.05;
+
+        const desplazamiento =
+            ladoAgarre === 'derecho'
+                ? distanciaLateral
+                : -distanciaLateral;
+
+        console.log('[ORDEN DE ESTACIONAMIENTO LATERAL]', {
+            estado,
+            ladoAgarre,
+            distancia: 0,
+            desplazamiento
+        });
+
+        carrito.seguirObjetivo(
+            grupo,
+            0,
+            desplazamiento
+        );
+
+        return;
+    }
+
+    // DETENER EN OTROS ESTADOS
+    if (carrito.siguiendo) {
+        console.log('[DETENIENDO SEGUIMIENTO CARRITO]', estado);
+        carrito.detenerSeguimiento();
+    }
+}
+
+function estaCaminando() {
+    return [
+        ESTADOS.ENTRANDO,
+        ESTADOS.ACERCANDO,
+        ESTADOS.RUTA,
+        ESTADOS.CAJA,
+        ESTADOS.REGRESANDO,
+        ESTADOS.REGRESANDO_CARRITO
+    ].includes(estado) || (
+        estado === ESTADOS.DEVOLVIENDO &&
+        animacionProducto.fase === 'CAMINANDO'
+    );
+}
+ 
+function cambiarEstado(nuevoEstado) {
+    if (estado === nuevoEstado) return;
+
+    const anterior = estado;
+
+    // Actualizar el estado antes de modificar el carrito.
+    estado = nuevoEstado;
+    tiempoEstado = 0;
+// Reiniciar el depósito cuando comienza una compra.
+if (nuevoEstado === ESTADOS.GUARDANDO) {
+
+    animacionDeposito.preparada = false;
+
+    animacionDeposito.fase = 'PREPARAR';
+
+    animacionDeposito.liberado = false;
+    animacionDeposito.completada = false;
+    animacionDeposito.error = false;
+
+    animacionDeposito.finalizado = false;
+
+    animacionDeposito.compra = null;
+
+    animacionDeposito.progresoDescenso = 0;
+}
+    console.log('[CAMBIO DE ESTADO CLIENTE]', {
+        anterior,
+        nuevo: nuevoEstado,
+        ladoAgarre,
+        tieneCarrito: !!config.carrito
+    });
+
+    if (nuevoEstado !== ESTADOS.GUARDANDO) {
+        animacionDeposito.preparada = false;
+    }
+
+    if (
+        nuevoEstado !== ESTADOS.INSPECCIONANDO &&
+        poseAgarreInspeccion.activa
+    ) {
+        poseAgarreInspeccion.activa = false;
+        poseAgarreInspeccion.huesos.length = 0;
+    }
+
+    // Actualizar el seguimiento según el nuevo estado.
+    console.log('[ACTUALIZANDO CARRITO POR CAMBIO DE ESTADO]', {
+        estado,
+        ladoAgarre
+    });
+
+    actualizarSeguimientoCarrito();
+
+    intentosMovimiento = 0;
+    tiempoRecalculoRuta = 0;
+    tiempoSinMovimiento = 0;
+
+    ultimaPosicionMovimiento.set(
+        grupo.position.x,
+        grupo.position.y,
+        grupo.position.z
+    );
+
+    const caminando = estaCaminando();
+
+    const animacionProcedural = [
+        ESTADOS.RECOGIENDO,
+        ESTADOS.INSPECCIONANDO,
+        ESTADOS.GUARDANDO,
+        ESTADOS.DEVOLVIENDO,
+        ESTADOS.PAGANDO
+    ].includes(estado);
+
+    if (caminando) {
+        const usaGLB = activarCaminarGLB();
+
+        if (!usaGLB) {
+            detenerAccionesGLB();
+        }
+    } else if (animacionProcedural) {
+        detenerAccionesGLB();
+    } else {
+        detenerAccionesGLB();
+        activarReposoGLB();
+    }
+
+    if (
+        !caminando &&
+        nuevoEstado !== ESTADOS.DEVOLVIENDO &&
+        nuevoEstado !== ESTADOS.INSPECCIONANDO &&
+        nuevoEstado !== ESTADOS.RECOGIENDO
+    ) {
+        restaurarPoseCompleta();
+    }
+
+    try {
+        config.alCambiarEstado?.({
+            cliente: api,
+            anterior,
+            estado: nuevoEstado
+        });
+    } catch (error) {
+        console.error(
+            '[ERROR AL CAMBIAR ESTADO CLIENTE]',
+            error
+        );
+    }
+}
+
+
+    
+    
+    
+
+    let obstaculosCache = [];
+
+function obtenerObstaculos() {
+    const obstaculos = [];
+
+    if (
+        Array.isArray(config.colisiones) &&
+        config.colisiones.length > 0
+    ) {
+        for (const colision of config.colisiones) {
+            if (!colision) continue;
+
+            const minX = numero(colision.minX, NaN);
+            const maxX = numero(colision.maxX, NaN);
+            const minZ = numero(colision.minZ, NaN);
+            const maxZ = numero(colision.maxZ, NaN);
+
+            const x = numero(
+                colision.x,
+                (minX + maxX) / 2
+            );
+
+            const z = numero(
+                colision.z,
+                (minZ + maxZ) / 2
+            );
+
+            const ancho = numero(
+                colision.ancho,
+                numero(colision.width, maxX - minX)
+            );
+
+            const profundidad = numero(
+                colision.profundidad,
+                numero(
+                    colision.fondo,
+                    numero(colision.depth, maxZ - minZ)
+                )
+            );
+
+            if (
+                !Number.isFinite(x) ||
+                !Number.isFinite(z) ||
+                !Number.isFinite(ancho) ||
+                !Number.isFinite(profundidad) ||
+                ancho <= 0 ||
+                profundidad <= 0
+            ) {
+                continue;
+            }
+
+            obstaculos.push({
+                x,
+                z,
+                ancho,
+                profundidad,
+                origen: colision,
+                id: colision.id ?? null,
+                nombre: colision.nombre ?? colision.name ?? null,
+                rackId: colision.rackId ?? colision.idRack ?? null
+            });
+        }
+
+        return obstaculos;
+    }
+
+    if (config.mobiliario?.traverse) {
+        config.mobiliario.updateMatrixWorld(true);
+
+        config.mobiliario.traverse(obj => {
+            if (
+                !obj.isMesh ||
+                obj.userData?.sinColision ||
+                obj.userData?.esProducto
+            ) {
+                return;
+            }
+
+            cajaTemporal.setFromObject(obj);
+
+            if (cajaTemporal.isEmpty()) return;
+
+            cajaTemporal.getCenter(vectorTemporal);
+            cajaTemporal.getSize(tamanoTemporal);
+
+            if (
+                tamanoTemporal.y > 3.5 ||
+                tamanoTemporal.x < 0.08 ||
+                tamanoTemporal.z < 0.08
+            ) {
+                return;
+            }
+
+            obstaculos.push({
+                x: vectorTemporal.x,
+                z: vectorTemporal.z,
+                ancho: tamanoTemporal.x,
+                profundidad: tamanoTemporal.z,
+                origen: obj,
+                id: obj.uuid,
+                nombre: obj.name,
+                rackId:
+                    obj.userData?.rackId ??
+                    obj.userData?.idRack ??
+                    null
+            });
+        });
+    }
+
+    return obstaculos;
+}
+
+    function actualizarColisiones() {
+        obstaculosCache = obtenerObstaculos();
+        tiempoActualizarObstaculos = 0;
+    }
+
+function puntoLibre(x, z, productoObjetivo = null) {
+    if (
+        x < -config.limiteX ||
+        x > config.limiteX ||
+        z < config.limiteZMin ||
+        z > config.limiteZMax
+    ) {
+        return false;
+    }
+const margenNormal = Math.max(
+    0.05,
+    (
+        numero(config.radioColision, 0.34) +
+        numero(config.margenObstaculos, 0.12)
+    ) * 0.65
+);
+
+const margen = productoObjetivo
+    ? 0.055
+    : margenNormal;
+    const dentroPuerta = estaEnCorredorPuerta(x, z);
+
+    for (const obstaculo of obstaculosCache) {
+        if (
+            dentroPuerta &&
+            esObstaculoDeFachada(obstaculo)
+        ) {
+            continue;
+        }
+
+        const mitadX = obstaculo.ancho * 0.5;
+        const mitadZ = obstaculo.profundidad * 0.5;
+
+        const distanciaX = Math.max(
+            Math.abs(x - obstaculo.x) - mitadX,
+            0
+        );
+
+        const distanciaZ = Math.max(
+            Math.abs(z - obstaculo.z) - mitadZ,
+            0
+        );
+
+        if (
+            distanciaX * distanciaX +
+            distanciaZ * distanciaZ <
+            margen * margen
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+
+function segmentoLibre(a, b, productoObjetivo = null) {
+    const distancia = distanciaXZ(a, b);
+
+    const pasos = Math.max(
+        1,
+        Math.ceil(distancia / 0.15)
+    );
+
+    for (let i = 0; i <= pasos; i++) {
+        const t = i / pasos;
+
+        const x = THREE.MathUtils.lerp(a.x, b.x, t);
+        const z = THREE.MathUtils.lerp(a.z, b.z, t);
+
+        if (!puntoLibre(x, z, productoObjetivo)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+    
+    
+    
+
+    function claveCelda(x, z) {
+        return `${x},${z}`;
+    }
+
+    function encontrarCamino(origen, destino) {
+        if (!origen || !destino) return [];
+
+        const inicio = {
+            x: numero(origen.x),
+            z: numero(origen.z)
+        };
+
+        const fin = {
+            x: numero(destino.x),
+            z: numero(destino.z)
+        };
+
+        if (!puntoLibre(fin.x, fin.z)) {
+            let mejor = null;
+            let mejorDistancia = Infinity;
+
+            for (let radio = 0.4; radio <= 2.8; radio += 0.4) {
+                for (
+                    let angulo = 0;
+                    angulo < Math.PI * 2;
+                    angulo += Math.PI / 4
+                ) {
+                    const candidato = {
+                        x: fin.x + Math.cos(angulo) * radio,
+                        z: fin.z + Math.sin(angulo) * radio
+                    };
+
+                    if (!puntoLibre(candidato.x, candidato.z)) {
+                        continue;
+                    }
+
+                    const d = distanciaXZ(candidato, fin);
+
+                    if (d < mejorDistancia) {
+                        mejor = candidato;
+                        mejorDistancia = d;
+                    }
+                }
+
+                if (mejor) break;
+            }
+
+            if (!mejor) return [];
+
+            fin.x = mejor.x;
+            fin.z = mejor.z;
+        }
+
+        if (segmentoLibre(inicio, fin)) {
+            return [fin];
+        }
+
+        const celda = config.tamanoCelda;
+
+        const aX = Math.round(inicio.x / celda);
+        const aZ = Math.round(inicio.z / celda);
+
+        const bX = Math.round(fin.x / celda);
+        const bZ = Math.round(fin.z / celda);
+
+        const inicioClave = claveCelda(aX, aZ);
+        const finClave = claveCelda(bX, bZ);
+
+        const heap = new MinHeap();
+
+        const nodos = new Map();
+        const cerrados = new Set();
+
+        const nodoInicio = {
+            x: aX,
+            z: aZ,
+            g: 0,
+            h: Math.hypot(bX - aX, bZ - aZ),
+            f: 0,
+            padre: null
+        };
+
+        nodoInicio.f = nodoInicio.g + nodoInicio.h;
+
+        heap.insertar(nodoInicio);
+        nodos.set(inicioClave, nodoInicio);
+
+        const direcciones = [
+            [1, 0, 1],
+            [-1, 0, 1],
+            [0, 1, 1],
+            [0, -1, 1],
+
+            [1, 1, 1.414],
+            [1, -1, 1.414],
+            [-1, 1, 1.414],
+            [-1, -1, 1.414]
+        ];
+
+        let encontrado = null;
+        let iteraciones = 0;
+
+        while (heap.length && iteraciones < 12000) {
+            iteraciones++;
+
+            const actual = heap.extraer();
+
+            if (!actual) break;
+
+            const actualClave = claveCelda(
+                actual.x,
+                actual.z
+            );
+
+            if (cerrados.has(actualClave)) continue;
+
+            const mejorNodo = nodos.get(actualClave);
+
+            if (mejorNodo !== actual) continue;
+
+            if (actualClave === finClave) {
+                encontrado = actual;
+                break;
+            }
+
+            cerrados.add(actualClave);
+
+            for (const [dx, dz, costo] of direcciones) {
+                const nx = actual.x + dx;
+                const nz = actual.z + dz;
+
+                const mundoX = nx * celda;
+                const mundoZ = nz * celda;
+
+                const vecinoClave = claveCelda(nx, nz);
+
+                if (cerrados.has(vecinoClave)) continue;
+                if (!puntoLibre(mundoX, mundoZ)) continue;
+
+                if (dx !== 0 && dz !== 0) {
+                    if (
+                        !puntoLibre(
+                            actual.x * celda + dx * celda,
+                            actual.z * celda
+                        ) ||
+                        !puntoLibre(
+                            actual.x * celda,
+                            actual.z * celda + dz * celda
+                        )
+                    ) {
+                        continue;
+                    }
+                }
+
+                const nuevoG = actual.g + costo;
+                const existente = nodos.get(vecinoClave);
+
+                if (existente && nuevoG >= existente.g) {
+                    continue;
+                }
+
+                const h = Math.hypot(
+                    bX - nx,
+                    bZ - nz
+                );
+
+                const vecino = {
+                    x: nx,
+                    z: nz,
+                    g: nuevoG,
+                    h,
+                    f: nuevoG + h,
+                    padre: actual
+                };
+
+                nodos.set(vecinoClave, vecino);
+                heap.insertar(vecino);
+            }
+        }
+
+        if (!encontrado) return [];
+
+        const camino = [];
+
+        let actual = encontrado;
+
+        while (actual) {
+            camino.unshift({
+                x: actual.x * celda,
+                z: actual.z * celda
+            });
+
+            actual = actual.padre;
+        }
+
+camino.shift();
+
+if (
+    camino.length === 0 ||
+    distanciaXZ(camino[camino.length - 1], fin) > 0.01
+) {
+    camino.push({
+        x: fin.x,
+        z: fin.z
+    });
+}
+        const suavizado = [];
+
+        let puntoActual = inicio;
+        let indice = 0;
+
+        while (indice < camino.length) {
+            let siguiente = indice;
+
+            for (
+                let j = camino.length - 1;
+                j >= indice;
+                j--
+            ) {
+                if (segmentoLibre(puntoActual, camino[j])) {
+                    siguiente = j;
+                    break;
+                }
+            }
+
+            suavizado.push(camino[siguiente]);
+
+            puntoActual = camino[siguiente];
+            indice = siguiente + 1;
+        }
+
+        return suavizado;
+    }
+
+    
+    
+    
+
+    function orientarHacia(dx, dz, delta = 0.016) {
+        if (Math.abs(dx) + Math.abs(dz) < 0.0001) {
+            intensidadGiro = THREE.MathUtils.lerp(intensidadGiro, 0, 0.12);
+            return;
+        }
+
+        rotacionObjetivo =
+            Math.atan2(dx, dz) +
+            config.correccionRotacion;
+
+        let diferencia = rotacionObjetivo - grupo.rotation.y;
+
+        while (diferencia > Math.PI) diferencia -= Math.PI * 2;
+        while (diferencia < -Math.PI) diferencia += Math.PI * 2;
+
+        const velocidadGiro = 1 - Math.exp(-config.suavizadoGiro * Math.max(delta, 0.001));
+        grupo.rotation.y += diferencia * velocidadGiro;
+
+        intensidadGiro = THREE.MathUtils.lerp(
+            intensidadGiro,
+            limitar(Math.abs(diferencia) / 0.6, 0, 1),
+            1 - Math.exp(-8 * Math.max(delta, 0.001))
+        );
+
+        inclinacionTorsoObjetivo = THREE.MathUtils.lerp(
+            inclinacionTorsoObjetivo,
+            limitar(diferencia * -0.12, -0.08, 0.08) * movimientoSuave,
+            0.12
+        );
+    }
+
+    function orientarHaciaPunto(punto) {
+        if (!punto) return;
+
+        const dx = punto.x - grupo.position.x;
+        const dz = punto.z - grupo.position.z;
+
+        orientarHacia(dx, dz);
+    }
+
+    function establecerObjetivo(
+        destino,
+        nuevoEstado = ESTADOS.RUTA
+    ) {
+        if (!destino) return false;
+
+        const punto = {
+            x: limitar(
+                numero(destino.x, grupo.position.x),
+                -config.limiteX,
+                config.limiteX
+            ),
+
+            z: limitar(
+                numero(destino.z, grupo.position.z),
+                config.limiteZMin,
+                config.limiteZMax
+            )
+        };
+
+        const camino = encontrarCamino(
+            grupo.position,
+            punto
+        );
+
+        if (!camino.length) return false;
+
+        ruta = camino;
+        indiceRuta = 0;
+        objetivo = camino[camino.length - 1];
+
+        intentosMovimiento = 0;
+        tiempoRecalculoRuta = 0;
+
+        ultimaPosicionMovimiento.set(
+            grupo.position.x,
+            grupo.position.y,
+            grupo.position.z
+        );
+
+        cambiarEstado(nuevoEstado);
+
+        return true;
+    }
+
+function recuperarMovimiento(forzar = false) {
+    if (!objetivo) return false;
+
+    if (
+        !forzar &&
+        tiempoRecalculoRuta < config.intervaloRecalculoRuta
+    ) {
+        return false;
+    }
+
+    tiempoRecalculoRuta = 0;
+    intentosMovimiento++;
+
+    const nuevoCamino = encontrarCamino(
+        grupo.position,
+        objetivo
+    );
+
+    if (nuevoCamino.length) {
+        ruta = nuevoCamino;
+        indiceRuta = 0;
+
+        // No reiniciar intentosMovimiento aquí.
+        // La ruta puede volver a bloquearse.
+        return true;
+    }
+
+    return false;
+}
+
+
+    function resolverClienteAtascado() {
+        console.warn(
+            `[CLIENTE ${id}] Se detectó movimiento detenido por ${config.tiempoMaximoAtasco} segundos.`
+        );
+
+        if (
+            estado === ESTADOS.DEVOLVIENDO &&
+            animacionProducto.fase === 'CAMINANDO' &&
+            cancelarReubicacion()
+        ) {
+            devolverProductoAlEstante();
+            return;
+        }
+
+        if (
+            estado === ESTADOS.ACERCANDO &&
+            productoObjetivo
+        ) {
+            productosConRutaFallida.add(productoObjetivo);
+            liberarReserva();
+            ruta = [];
+            objetivo = null;
+            tiempoSinMovimiento = 0;
+            cambiarEstado(ESTADOS.BUSCANDO);
+            return;
+        }
+
+        liberarReserva();
+        ruta = [];
+        objetivo = null;
+        intentosMovimiento = 0;
+        tiempoSinMovimiento = 0;
+
+        if (estado === ESTADOS.REGRESANDO) {
+            cambiarEstado(ESTADOS.ESPERANDO);
+            return;
+        }
+
+        if (estado === ESTADOS.ENTRANDO) {
+            cambiarEstado(ESTADOS.ESPERANDO);
+            return;
+        }
+
+        if (estado === ESTADOS.CAJA) {
+            cambiarEstado(ESTADOS.ESPERANDO);
+            return;
+        }
+
+        if (compras.length >= config.maximoProductos) {
+            if (!dirigirseACaja()) {
+                cambiarEstado(ESTADOS.ESPERANDO);
+            }
+            return;
+        }
+
+        iniciarPaseo();
+    }
+
+    function moverHaciaDestino(delta) {
+        if (!ruta.length || indiceRuta >= ruta.length) {
+            return true;
+        }
+
+        const destino = ruta[indiceRuta];
+
+        const dx = destino.x - grupo.position.x;
+        const dz = destino.z - grupo.position.z;
+
+        const distancia = Math.hypot(dx, dz);
+
+        if (distancia < config.distanciaLlegada) {
+            grupo.position.x = destino.x;
+            grupo.position.z = destino.z;
+            grupo.position.y = numero(config.posicion.y);
+
+            indiceRuta++;
+
+            if (indiceRuta >= ruta.length) {
+                ruta = [];
+                objetivo = null;
+                return true;
+            }
+
+            return false;
+        }
+
+        let velocidad = config.velocidad;
+
+        if (estado === ESTADOS.ENTRANDO) {
+            velocidad = config.velocidadEntrada;
+        }
+
+        if (estado === ESTADOS.REGRESANDO) {
+            velocidad = config.velocidadRegreso;
+        }
+
+        const direccionX = dx / distancia;
+        const direccionZ = dz / distancia;
+
+        orientarHacia(direccionX, direccionZ, delta);
+
+        const distanciaFrenado = Math.min(1.5, velocidad * 0.9);
+        const factorDestino = limitar(distancia / distanciaFrenado, 0.18, 1);
+        const velocidadDeseada = velocidad * factorDestino;
+        const tasa = Math.max(1, config.aceleracionMovimiento);
+
+        velocidadActual = THREE.MathUtils.lerp(
+            velocidadActual,
+            velocidadDeseada,
+            1 - Math.exp(-tasa * delta)
+        );
+
+        movimientoSuave = THREE.MathUtils.lerp(
+            movimientoSuave,
+            limitar(velocidadActual / Math.max(velocidad, 0.1), 0, 1),
+            1 - Math.exp(-5 * delta)
+        );
+
+        const avance = Math.min(
+            distancia,
+            velocidadActual * delta
+        );
+
+        const nuevoX =
+            grupo.position.x + direccionX * avance;
+
+        const nuevoZ =
+            grupo.position.z + direccionZ * avance;
+
+        if (
+            !segmentoLibre(
+                grupo.position,
+                { x: nuevoX, z: nuevoZ }
+            )
+        ) {
+            tiempoRecalculoRuta += delta;
+
+            recuperarMovimiento();
+
+            if (
+                intentosMovimiento >=
+                config.maximosIntentosMovimiento
+            ) {
+                console.warn(
+                    `[CLIENTE ${id}] No pudo continuar su ruta.`
+                );
+
+                if (
+                    estado === ESTADOS.ACERCANDO &&
+                    productoObjetivo
+                ) {
+                    productosConRutaFallida.add(productoObjetivo);
+                }
+
+                ruta = [];
+                objetivo = null;
+                intentosMovimiento = 0;
+
+                if (
+                    estado === ESTADOS.DEVOLVIENDO &&
+                    animacionProducto.fase === 'CAMINANDO' &&
+                    cancelarReubicacion()
+                ) {
+                    devolverProductoAlEstante();
+                } else if (estado === ESTADOS.REGRESANDO) {
+                    cambiarEstado(ESTADOS.ESPERANDO);
+                } else {
+                    liberarReserva();
+                    cambiarEstado(ESTADOS.BUSCANDO);
+                }
+            }
+
+            return false;
+        }
+
+        grupo.position.x = nuevoX;
+        grupo.position.z = nuevoZ;
+        grupo.position.y = numero(config.posicion.y);
+
+        tiempoRecalculoRuta = 0;
+        intentosMovimiento = 0;
+
+        animarCaminarProcedural(delta);
+
+        return false;
+    }
+
+    function establecerRuta(puntos, repetir = false) {
+        if (!Array.isArray(puntos) || !puntos.length) {
+            return false;
+        }
+
+        const camino = [];
+
+        let actual = {
+            x: grupo.position.x,
+            z: grupo.position.z
+        };
+
+        for (const punto of puntos) {
+            const segmento = encontrarCamino(actual, punto);
+
+            if (!segmento.length) continue;
+
+            camino.push(...segmento);
+            actual = segmento[segmento.length - 1];
+        }
+
+        if (!camino.length) return false;
+
+        ruta = camino;
+        indiceRuta = 0;
+        objetivo = camino[camino.length - 1];
+
+        config.repetirRuta = repetir;
+
+        cambiarEstado(ESTADOS.RUTA);
+
+        return true;
+    }
+
+    function establecerPosicion(posicion) {
+        if (!posicion) return false;
+
+        grupo.position.set(
+            numero(posicion.x, grupo.position.x),
+            numero(posicion.y, numero(config.posicion.y)),
+            numero(posicion.z, grupo.position.z)
+        );
+
+        ruta = [];
+        objetivo = null;
+
+        intentosMovimiento = 0;
+        tiempoRecalculoRuta = 0;
+
+        return true;
+    }
+
+    
+    
+    
+
+    function obtenerProductos() {
+        if (Array.isArray(config.productos)) {
+            return config.productos;
+        }
+
+        if (config.productos?.traverse) {
+            const encontrados = [];
+
+            config.productos.traverse(obj => {
+                if (obj.userData?.esProducto) {
+                    encontrados.push(obj);
+                }
+            });
+
+            return encontrados;
+        }
+
+        return [];
+    }
+
+    function productoDisponible(producto) {
+        if (!producto || !producto.visible) return false;
+
+        if (producto.userData?.vendido) return false;
+        if (producto.userData?.enCarrito) return false;
+
+        const propietario = reservasProductos.get(producto);
+
+        if (propietario !== undefined && propietario !== id) {
+            return false;
+        }
+
+        if (
+            producto.userData?.reservado &&
+            producto.userData?.reservadoPor !== id
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function reservarProducto(producto) {
+        if (!productoDisponible(producto)) return false;
+        if (!reservarRack(producto)) return false;
+
+        reservasProductos.set(producto, id);
+
+        producto.userData.reservado = true;
+        producto.userData.reservadoPor = id;
+
+        productoObjetivo = producto;
+
+        return true;
+    }
+
+    function liberarReserva() {
+        liberarRack();
+
+        if (productoConCajaAgarre === productoObjetivo) {
+            productoConCajaAgarre = null;
+        }
+
+        if (productoObjetivo) {
+            if (reservasProductos.get(productoObjetivo) === id) {
+                reservasProductos.delete(productoObjetivo);
+
+                productoObjetivo.userData.reservado = false;
+
+                delete productoObjetivo.userData.reservadoPor;
+            }
+        }
+
+        productoObjetivo = null;
+    }
+
+    
+    
+    
+
+    function esProductoBuscado(producto) {
+        if (!producto) return false;
+
+        const datos = producto.userData ?? {};
+
+        
+        const identificadores = [
+            datos.nombre,
+            datos.nombreProducto,
+            datos.categoria,
+            datos.codigo,
+            datos.tipo,
+            datos.name,
+            producto.name,
+            producto.producto?.name,
+            producto.producto?.nombre
+        ];
+
+        const nombresNormalizados = identificadores
+            .filter(valor =>
+                valor !== undefined &&
+                valor !== null &&
+                String(valor).trim() !== ''
+            )
+            .map(valor => normalizarNombre(valor))
+            .filter(Boolean);
+
+        
+        
+        
+
+        if (config.soloPlatanos) {
+            const aliasPlatanos = [
+                'platano',
+                'platanos',
+                'banana',
+                'bananas'
+            ];
+
+            const coincidePlatano = nombresNormalizados.some(nombre =>
+                aliasPlatanos.some(alias =>
+                    nombre.includes(alias)
+                )
+            );
+
+            
+            
+            return coincidePlatano;
+        }
+
+        
+        
+        
+
+        if (config.nombreProductoBuscado) {
+            const buscado = normalizarNombre(
+                config.nombreProductoBuscado
+            );
+
+            if (!buscado) return true;
+
+            return nombresNormalizados.some(nombre =>
+                nombre.includes(buscado)
+            );
+        }
+
+        
+        return true;
+    }
+
+    
+    
+    
+
+    function buscarProducto() {
+        const productos = obtenerProductos();
+
+        const candidatos = [];
+
+        for (const producto of productos) {
+            if (!productoDisponible(producto)) continue;
+
+            
+            if (!esProductoBuscado(producto)) continue;
+
+            if (productosConRutaFallida.has(producto)) continue;
+
+            if (productosExaminados.has(producto)) continue;
+
+            const claveRack = obtenerClaveRack(producto);
+
+            if (!rackDisponible(producto)) continue;
+
+            producto.getWorldPosition(vectorTemporal);
+
+            const distancia = distanciaXZ(
+                grupo.position,
+                vectorTemporal
+            );
+
+            if (distancia > config.distanciaMaximaBusqueda) {
+                continue;
+            }
+
+            candidatos.push({
+                producto,
+                claveRack,
+                distancia
+            });
+        }
+
+        if (!candidatos.length) return null;
+
+        let sinVisitar = candidatos.filter(
+            candidato => !racksVisitados.has(candidato.claveRack)
+        );
+
+        if (!sinVisitar.length) {
+            racksVisitados.clear();
+            sinVisitar = candidatos;
+        }
+
+        const candidatosPorRack = new Map();
+
+        for (const candidato of sinVisitar) {
+            const anterior = candidatosPorRack.get(
+                candidato.claveRack
+            );
+
+            if (
+                !anterior ||
+                candidato.distancia < anterior.distancia
+            ) {
+                candidatosPorRack.set(
+                    candidato.claveRack,
+                    candidato
+                );
+            }
+        }
+
+        const racksDisponibles = [...candidatosPorRack.values()];
+        const rackElegido = racksDisponibles[
+            Math.floor(Math.random() * racksDisponibles.length)
+        ];
+
+        return rackElegido?.producto ?? null;
+    }
+
+
+
+function obtenerPuntoFrenteProducto(producto) {
+    if (!producto) return null;
+
+    producto.updateWorldMatrix(true, false);
+    cajaTemporal.setFromObject(producto);
+
+    if (cajaTemporal.isEmpty()) return null;
+
+    cajaTemporal.getCenter(vectorTemporal2);
+    cajaTemporal.getSize(tamanoTemporal);
+
+    const cx = vectorTemporal2.x;
+    const cz = vectorTemporal2.z;
+
+    const hx = tamanoTemporal.x * 0.5;
+    const hz = tamanoTemporal.z * 0.5;
+
+    const lados = [
+        { x: 1, z: 0 },
+        { x: -1, z: 0 },
+        { x: 0, z: 1 },
+        { x: 0, z: -1 }
+    ];
+
+    const candidatos = [];
+
+    // Buscar alrededor del producto, aumentando la separación
+    // hasta encontrar un punto realmente transitable.
+    for (const lado of lados) {
+        const borde = lado.x !== 0 ? hx : hz;
+
+        for (let separacion = 0.06; separacion <= 1.20; separacion += 0.06) {
+            const x = cx + lado.x * (borde + separacion);
+            const z = cz + lado.z * (borde + separacion);
+
+            if (
+                x < -config.limiteX ||
+                x > config.limiteX ||
+                z < config.limiteZMin ||
+                z > config.limiteZMax
+            ) {
+                continue;
+            }
+
+            if (!puntoLibre(x, z)) {
+                continue;
+            }
+
+            const destino = { x, z };
+
+            const camino = encontrarCamino(
+                grupo.position,
+                destino
+            );
+
+            if (!camino || camino.length === 0) {
+                continue;
+            }
+
+            candidatos.push({
+                x,
+                z,
+                separacion,
+                recorrido: distanciaXZ(
+                    grupo.position,
+                    destino
+                ),
+                lado
+            });
+
+            // Ya encontramos el punto transitable más cercano
+            // de este lado. No hace falta alejarlo más.
+            break;
+        }
+    }
+
+    if (candidatos.length === 0) {
+        return null;
+    }
+
+    // Primero elegir el punto más cercano al producto.
+    // En caso de empate, elegir el recorrido más corto.
+    candidatos.sort((a, b) =>
+        a.separacion - b.separacion ||
+        a.recorrido - b.recorrido
+    );
+
+    return {
+        x: candidatos[0].x,
+        z: candidatos[0].z
+    };
+}
+
+
+    function acercarseAProducto(producto) {
+        if (!reservarProducto(producto)) return false;
+const destino = obtenerPuntoFrenteProducto(producto);
+if (destino) {
+    producto.updateMatrixWorld(true);
+
+    const posicionProducto = new THREE.Vector3();
+    producto.getWorldPosition(posicionProducto);
+
+    console.log('[DIAGNÓSTICO DE APROXIMACIÓN]', {
+        cliente: grupo.position.clone(),
+        producto: posicionProducto,
+        destino,
+        distanciaDestinoProducto: Math.hypot(
+            destino.x - posicionProducto.x,
+            destino.z - posicionProducto.z
+        ),
+        distanciaClienteDestino: Math.hypot(
+            destino.x - grupo.position.x,
+            destino.z - grupo.position.z
+        )
+    });
+} else {
+    console.warn('[DIAGNÓSTICO] No se encontró un punto libre frente al producto.');
+}
+        if (!destino) {
+            productosConRutaFallida.add(producto);
+            liberarReserva();
+            return false;
+        }
+
+        if (
+            !establecerObjetivo(
+                destino,
+                ESTADOS.ACERCANDO
+            )
+        ) {
+            productosConRutaFallida.add(producto);
+            liberarReserva();
+            return false;
+        }
+
+        return true;
+    }
+
+ function tomarProducto(agarreResuelto = false) {
+    if (
+        !productoObjetivo ||
+        !productoDisponible(productoObjetivo)
+    ) {
+        liberarReserva();
+        cambiarEstado(ESTADOS.BUSCANDO);
+        return;
+    }
+
+    const producto = productoObjetivo;
+
+    producto.updateMatrixWorld(true);
+    grupo.updateMatrixWorld(true);
+
+    productoEsInferior =
+        productoEstaEnEstanteInferior(producto);
+
+    cajaTemporal.setFromObject(producto);
+
+    const tamanoProducto = new THREE.Vector3();
+    cajaTemporal.getSize(tamanoProducto);
+
+    productoOriginal = {
+        parent: producto.parent,
+        posicion: producto.position.clone(),
+        quaternion: producto.quaternion.clone(),
+        escala: producto.scale.clone(),
+        visible: producto.visible,
+        tamanoMundo: tamanoProducto.clone()
+    };
+
+    const brazo = obtenerRigBrazo();
+    const mano = brazo?.mano;
+
+    if (!mano || !agarreResuelto) {
+        productoOriginal = null;
+        liberarReserva();
+        cambiarEstado(ESTADOS.BUSCANDO);
+        return;
+    }
+
+    // --------------------------------------------------
+    // 1. ACTUALIZAR MATRICES
+    // --------------------------------------------------
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+
+    // --------------------------------------------------
+    // 2. OBTENER POSICIÓN REAL DE LA MUÑECA
+    // --------------------------------------------------
+
+    const palmaMundo = mano.getWorldPosition(
+        new THREE.Vector3()
+    );
+
+
+
+    // --------------------------------------------------
+    // 3. COMPROBAR CONTACTO CON EL PRODUCTO
+    // --------------------------------------------------
+
+    const cajaProducto = new THREE.Box3()
+        .setFromObject(producto);
+
+    if (cajaProducto.isEmpty()) {
+        productoOriginal = null;
+        liberarReserva();
+        cambiarEstado(ESTADOS.BUSCANDO);
+        return;
+    }
+
+    const errorContacto = palmaMundo.distanceTo(
+        ikAgarre.objetivoContacto
+    );
+
+    const toleranciaContacto = limitar(
+        numero(config.toleranciaAgarre, 0.10),
+        0.04,
+        0.18
+    );
+
+    if (errorContacto > toleranciaContacto) {
+        const tiempoMaximo =
+            Math.max(
+                numero(config.tiempoRecoger, 1.1),
+                0.01
+            ) + 0.75;
+
+        if (tiempoEstado < tiempoMaximo) {
+            return;
+        }
+
+        productoOriginal = null;
+        liberarReserva();
+        cambiarEstado(ESTADOS.BUSCANDO);
+        return;
+    }
+
+    // --------------------------------------------------
+    // 4. GUARDAR PUNTO DE CONTACTO
+    // --------------------------------------------------
+
+    const puntoContactoLocal = producto.worldToLocal(
+        ikAgarre.puntoContacto.clone()
+    );
+
+    const normalContactoLocal =
+        ikAgarre.normalContacto
+            .clone()
+            .transformDirection(
+                producto.matrixWorld.clone().invert()
+            )
+            .normalize();
+
+    // --------------------------------------------------
+    // 5. GUARDAR LA TRANSFORMACIÓN ORIGINAL
+    // --------------------------------------------------
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+
+    const posicionMundoInicial = producto.getWorldPosition(
+        new THREE.Vector3()
+    );
+
+    const quaternionMundoInicial = producto.getWorldQuaternion(
+        new THREE.Quaternion()
+    );
+
+    const escalaMundoInicial = producto.getWorldScale(
+        new THREE.Vector3()
+    );
+
+    // --------------------------------------------------
+    // 6. UNIR EL PRODUCTO A LA MANO SIN TELETRANSPORTARLO
+    // --------------------------------------------------
+
+    mano.attach(producto);
+
+    grupo.updateMatrixWorld(true);
+    mano.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+
+    // --------------------------------------------------
+    // 7. CALCULAR EL AGARRE REAL EN LA PALMA
+    // --------------------------------------------------
+
+    // Punto de contacto del producto convertido
+    // a coordenadas locales de la mano.
+    const contactoMundo = ikAgarre.puntoContacto.clone();
+
+    const contactoEnMano = mano.worldToLocal(
+        contactoMundo.clone()
+    );
+
+    // Posición del centro de la palma.
+    const centroPalma = new THREE.Vector3();
+
+    mano.getWorldPosition(centroPalma);
+
+    const centroPalmaLocal = mano.worldToLocal(
+        centroPalma.clone()
+    );
+
+    // Desplazamiento pequeño para que el producto
+    // quede sujeto y no suspendido frente a la mano.
+    const ajustePalma = new THREE.Vector3(
+        0,
+        0.025,
+        0.015
+    );
+
+    const posicionFinal = producto.position.clone();
+
+    posicionFinal.add(
+        centroPalmaLocal.clone()
+            .sub(contactoEnMano)
+            .add(ajustePalma)
+    );
+
+    // Conservar la orientación original del producto.
+    const quaternionFinal = producto.quaternion.clone();
+
+    const escalaFinal = producto.scale.clone();
+
+    // --------------------------------------------------
+    // 8. CONFIGURAR LA ANIMACIÓN DEL AGARRE
+    // --------------------------------------------------
+
+    animacionAgarre.activa = true;
+    animacionAgarre.tiempo = 0;
+
+    animacionAgarre.duracion = Math.max(
+        numero(config.tiempoAnimacionAgarre, 0.38),
+        0.05
+    );
+
+    animacionAgarre.posicionInicial.copy(
+        producto.position
+    );
+
+    animacionAgarre.posicionFinal.copy(
+        posicionFinal
+    );
+
+    animacionAgarre.quaternionInicial.copy(
+        producto.quaternion
+    );
+
+    animacionAgarre.quaternionFinal.copy(
+        quaternionFinal
+    );
+
+    animacionAgarre.escalaInicial.copy(
+        producto.scale
+    );
+
+    animacionAgarre.escalaFinal.copy(
+        escalaFinal
+    );
+
+    producto.visible = true;
+    productoEnMano = producto;
+    productoConCajaAgarre = null;
+
+    // --------------------------------------------------
+    // 8. PREPARAR POSE DE INSPECCIÓN
+    // --------------------------------------------------
+
+poseAgarreInspeccion.huesos.length = 0;
+
+for (const [hueso] of huesosBase) {
+    const rotacionActual = hueso.quaternion.clone();
+
+    poseAgarreInspeccion.huesos.push({
+        hueso,
+        inicial: rotacionActual.clone(),
+        objetivo: rotacionActual.clone()
+    });
+}
+
+    poseAgarreInspeccion.posicionGrupoY =
+        grupo.position.y;
+
+    poseAgarreInspeccion.duracion = Math.max(
+        numero(config.tiempoAnimacionAgarre, 0.38),
+        0.05
+    );
+
+    poseAgarreInspeccion.activa =
+        poseAgarreInspeccion.huesos.length > 0;
+
+    // --------------------------------------------------
+    // 9. REGISTRAR PRODUCTO
+    // --------------------------------------------------
+
+    productosExaminados.add(producto);
+
+    cambiarEstado(ESTADOS.INSPECCIONANDO);
+}
+
+    function buscarUbicacionOtroRack(producto) {
+        if (!producto || !productoOriginal) return null;
+
+        const productos = obtenerProductos();
+
+        const rackActual =
+            rackReservado ?? obtenerClaveRack(producto);
+
+        const tamanoProducto =
+            productoOriginal.tamanoMundo ??
+            new THREE.Vector3(0.3, 0.3, 0.3);
+
+        const posicionEstanteOriginal = new THREE.Vector3();
+
+        if (productoOriginal.parent) {
+            productoOriginal.parent.updateMatrixWorld(true);
+            posicionEstanteOriginal.copy(productoOriginal.posicion);
+            productoOriginal.parent.localToWorld(
+                posicionEstanteOriginal
+            );
+        }
+
+        const candidatos = [];
+
+        for (const ancla of productos) {
+            if (!ancla || ancla === producto) continue;
+            if (!ancla.visible) continue;
+
+            if (ancla.userData?.vendido) continue;
+            if (ancla.userData?.enCarrito) continue;
+
+            if (!ancla.parent) continue;
+
+            const claveRack = obtenerClaveRack(ancla);
+
+            if (claveRack === rackActual) continue;
+            if (!rackDisponible(ancla)) continue;
+
+            ancla.updateMatrixWorld(true);
+
+            cajaTemporal.setFromObject(ancla);
+
+            if (cajaTemporal.isEmpty()) continue;
+
+            const tamanoAncla = new THREE.Vector3();
+
+            cajaTemporal.getSize(tamanoAncla);
+
+            const posicionAncla = new THREE.Vector3();
+
+            ancla.getWorldPosition(posicionAncla);
+
+            if (
+                productoOriginal.parent &&
+                Math.abs(
+                    posicionAncla.y - posicionEstanteOriginal.y
+                ) > 0.18
+            ) {
+                continue;
+            }
+
+            const separacion = config.separacionProductoRack;
+
+            const desplazamientoX =
+                tamanoAncla.x / 2 +
+                tamanoProducto.x / 2 +
+                separacion;
+
+            const desplazamientoZ =
+                tamanoAncla.z / 2 +
+                tamanoProducto.z / 2 +
+                separacion;
+
+            const posiciones = [
+                { x: desplazamientoX, z: 0 },
+                { x: -desplazamientoX, z: 0 },
+                { x: 0, z: desplazamientoZ },
+                { x: 0, z: -desplazamientoZ }
+            ];
+
+            for (const desplazamiento of posiciones) {
+                const posicionMundo = new THREE.Vector3(
+                    posicionAncla.x + desplazamiento.x,
+                    posicionAncla.y,
+                    posicionAncla.z + desplazamiento.z
+                );
+
+                const padre = ancla.parent;
+
+                padre.updateMatrixWorld(true);
+
+                const posicionLocal =
+                    padre.worldToLocal(posicionMundo.clone());
+
+                const quaternionLocal = ancla.quaternion.clone();
+
+                let ocupado = false;
+
+                const cajaPosicion = new THREE.Box3()
+                    .setFromCenterAndSize(
+                        posicionMundo,
+                        tamanoProducto
+                    );
+
+                for (const otro of productos) {
+                    if (
+                        !otro ||
+                        otro === producto ||
+                        otro === ancla ||
+                        !otro.visible
+                    ) {
+                        continue;
+                    }
+
+                    otro.updateMatrixWorld(true);
+
+                    const cajaOtro =
+                        new THREE.Box3().setFromObject(otro);
+
+                    if (cajaOtro.intersectsBox(cajaPosicion)) {
+                        ocupado = true;
+                        break;
+                    }
+                }
+
+                if (ocupado) continue;
+
+                const distancia = distanciaXZ(
+                    grupo.position,
+                    posicionMundo
+                );
+
+                candidatos.push({
+                    ancla,
+                    claveRack,
+                    padre,
+
+                    posicionMundo,
+                    posicionLocal,
+                    quaternionLocal,
+
+                    escala: productoOriginal.escala.clone(),
+
+                    distancia
+                });
+            }
+        }
+
+        if (!candidatos.length) return null;
+
+        candidatos.sort(
+            (a, b) => a.distancia - b.distancia
+        );
+
+        const cantidad = Math.min(3, candidatos.length);
+
+        return candidatos[
+            Math.floor(Math.random() * cantidad)
+        ];
+    }
+
+    
+    
+    
+
+    function prepararDevolucionEnOtroRack() {
+        if (!productoEnMano || !productoOriginal) {
+            return false;
+        }
+
+        const ubicacion = buscarUbicacionOtroRack(
+            productoEnMano
+        );
+
+        if (!ubicacion) return false;
+
+        const rackAnterior =
+            rackReservado ?? obtenerClaveRack(productoEnMano);
+
+        const escalaOriginal =
+            productoOriginal.escala.clone();
+
+        const tamanoOriginal =
+            productoOriginal.tamanoMundo.clone();
+
+        const transformacionOriginal = {
+            parent: productoOriginal.parent,
+            posicion: productoOriginal.posicion.clone(),
+            quaternion: productoOriginal.quaternion.clone(),
+            escala: productoOriginal.escala.clone(),
+            visible: productoOriginal.visible,
+            tamanoMundo: productoOriginal.tamanoMundo.clone()
+        };
+
+        liberarReserva();
+
+        if (!reservarRack(ubicacion.ancla)) {
+            return false;
+        }
+
+        productoOriginal = {
+            parent: ubicacion.padre,
+
+            posicion: ubicacion.posicionLocal.clone(),
+            quaternion: ubicacion.quaternionLocal.clone(),
+
+            escala: escalaOriginal,
+            visible: true,
+
+            tamanoMundo: tamanoOriginal,
+
+            rackAnterior,
+            rackNuevo: ubicacion.claveRack,
+            origen: transformacionOriginal
+        };
+
+        animacionProducto.tipo = 'REUBICAR';
+
+        console.log(
+            `[CLIENTE ${id}] Dejará el producto en otro rack.`,
+            ubicacion.claveRack
+        );
+
+        return true;
+    }
+
+    
+    
+    
+
+function devolverProductoAlEstante() {
+    if (!productoEnMano || !productoOriginal) {
+        productoEnMano = null;
+        productoOriginal = null;
+
+        animacionProducto.activa = false;
+        animacionProducto.fase = null;
+        animacionAgarre.activa = false;
+
+        liberarReserva();
+        return;
+    }
+
+    if (animacionProducto.activa) return;
+
+    const producto = productoEnMano;
+    const original = productoOriginal;
+
+    if (!original.parent) {
+        finalizarDevolucionProducto();
+        return;
+    }
+
+    animacionAgarre.activa = false;
+    animacionAgarre.tiempo = 0;
+
+    grupo.updateMatrixWorld(true);
+    producto.updateMatrixWorld(true);
+    original.parent.updateMatrixWorld(true);
+
+    // Calcular la transformación mundial del destino.
+    const matrizOriginal = new THREE.Matrix4();
+
+    matrizOriginal.compose(
+        original.posicion,
+        original.quaternion,
+        original.escala
+    );
+
+    const matrizMundoOriginal = new THREE.Matrix4();
+
+    matrizMundoOriginal.multiplyMatrices(
+        original.parent.matrixWorld,
+        matrizOriginal
+    );
+
+    const posicionFinal = new THREE.Vector3();
+    const quaternionFinal = new THREE.Quaternion();
+    const escalaFinal = new THREE.Vector3();
+
+    matrizMundoOriginal.decompose(
+        posicionFinal,
+        quaternionFinal,
+        escalaFinal
+    );
+
+    // Si se trata de una reubicación, caminar primero
+    // hasta el nuevo estante.
+    if (
+        animacionProducto.tipo === 'REUBICAR' &&
+        animacionProducto.fase === null &&
+        distanciaXZ(grupo.position, posicionFinal) > 1.1
+    ) {
+        vectorTemporal.set(
+            grupo.position.x - posicionFinal.x,
+            0,
+            grupo.position.z - posicionFinal.z
+        );
+
+        if (vectorTemporal.lengthSq() < 0.0001) {
+            grupo.getWorldDirection(vectorTemporal);
+        }
+
+        vectorTemporal.normalize();
+
+        const destino = {
+            x: posicionFinal.x + vectorTemporal.x * 0.62,
+            z: posicionFinal.z + vectorTemporal.z * 0.62
+        };
+
+        animacionProducto.fase = 'CAMINANDO';
+
+        if (
+            establecerObjetivo(
+                destino,
+                ESTADOS.DEVOLVIENDO
+            )
+        ) {
+            return;
+        }
+
+        animacionProducto.fase = null;
+
+        // Si no puede llegar al nuevo estante,
+        // regresar al lugar original.
+        if (original.origen) {
+            liberarReserva();
+
+            productoOriginal = { ...original.origen };
+
+            animacionProducto.tipo = 'DEVOLVER';
+
+            devolverProductoAlEstante();
+            return;
+        }
+    }
+
+    // Obtener la mano que sostiene el producto.
+    const brazo = obtenerRigBrazo();
+    const mano = brazo?.mano;
+
+    if (!mano) {
+        finalizarDevolucionProducto();
+        return;
+    }
+
+    // Asegurar que el producto permanezca unido
+    // a la mano durante toda la colocación.
+    grupo.updateMatrixWorld(true);
+
+    if (producto.parent !== mano) {
+        mano.attach(producto);
+    }
+
+    mano.updateMatrixWorld(true);
+
+    // Guardar la posición inicial de la muñeca.
+    animacionProducto.manoInicial =
+        new THREE.Vector3();
+
+    mano.getWorldPosition(
+        animacionProducto.manoInicial
+    );
+
+    // Guardar el destino mundial del producto.
+    animacionProducto.posicionInicial =
+        new THREE.Vector3();
+
+    producto.getWorldPosition(
+        animacionProducto.posicionInicial
+    );
+
+    animacionProducto.posicionFinal.copy(
+        posicionFinal
+    );
+
+    animacionProducto.quaternionInicial =
+        new THREE.Quaternion();
+
+    producto.getWorldQuaternion(
+        animacionProducto.quaternionInicial
+    );
+
+    animacionProducto.quaternionFinal.copy(
+        quaternionFinal
+    );
+
+    animacionProducto.escalaInicial =
+        new THREE.Vector3();
+
+    producto.getWorldScale(
+        animacionProducto.escalaInicial
+    );
+
+    animacionProducto.escalaFinal.copy(
+        escalaFinal
+    );
+
+    // Comenzar la extensión del brazo.
+    animacionProducto.activa = true;
+    animacionProducto.tiempo = 0;
+    animacionProducto.fase = 'ALCANCE';
+
+    animacionProducto.duracion = Math.max(
+        numero(config.tiempoDevolver, 1.4),
+        0.1
+    );
+
+    tiempoEstado = 0;
+
+    // Reiniciar los temporizadores del gesto.
+    animacionAgarre.activa = false;
+    animacionAgarre.tiempo = 0;
+}
+
+    
+function guardarProducto() {
+
+    if (animacionDeposito.finalizado) return;
+
+    animacionDeposito.preparada = false;
+
+    // =========================================
+    // COMPROBAR SI SE PUDO LIBERAR EL PRODUCTO
+    // =========================================
+
+    if (
+        animacionDeposito.error ||
+        !animacionDeposito.liberado ||
+        !animacionDeposito.compra
+    ) {
+
+        const producto = productoEnMano;
+
+        console.warn(
+            `[CLIENTE ${id}] El depósito no se completó correctamente.`
+        );
+
+        if (producto && productoOriginal) {
+
+            animacionProducto.tipo = 'DEVOLVER';
+
+            devolverProductoAlEstante();
+
+            cambiarEstado(ESTADOS.DEVOLVIENDO);
+
+        } else {
+
+            productoEnMano = null;
+            productoOriginal = null;
+
+            liberarReserva();
+
+            cambiarEstado(ESTADOS.BUSCANDO);
+        }
+
+        return;
+    }
+
+    // =========================================
+    // REGISTRAR COMPRA
+    // =========================================
+
+    const compra = animacionDeposito.compra;
+
+    compras.push(compra);
+
+    animacionDeposito.finalizado = true;
+
+    try {
+
+        config.alComprar?.({
+            cliente: api,
+            producto: compra,
+            totalProductos: compras.length
+        });
+
+    } catch (error) {
+
+        console.error(
+            `[CLIENTE ${id}] Error en alComprar:`,
+            error
+        );
+    }
+
+    console.log(
+        `[CLIENTE ${id}] Producto depositado: ${compra.nombre}`,
+        `| Total: ${compras.length}`
+    );
+
+    // Limpiar animación.
+    animacionDeposito.fase = null;
+    animacionDeposito.compra = null;
+
+    animacionDeposito.liberado = false;
+    animacionDeposito.completada = false;
+    animacionDeposito.error = false;
+
+    cambiarEstado(ESTADOS.BUSCANDO);
+}
+    
+
+    function decidirCompra() {
+        if (compras.length >= config.maximoProductos) {
+            dirigirseACaja();
+            return;
+        }
+
+        const producto = buscarProducto();
+
+        if (!producto) {
+            if (compras.length > 0) {
+                dirigirseACaja();
+            } else {
+                cambiarEstado(ESTADOS.ESPERANDO);
+            }
+
+            return;
+        }
+
+        if (!acercarseAProducto(producto)) {
+            liberarReserva();
+            cambiarEstado(ESTADOS.BUSCANDO);
+        }
+    }
+
+    
+    
+    
+
+    const puntosRecorrido = [
+        { x: -25, z: 16 },
+        { x: -20, z: 10 },
+        { x: -15, z: 5 },
+        { x: -8, z: 5 },
+        { x: 0, z: 5 },
+        { x: 8, z: 5 },
+        { x: 15, z: 5 },
+        { x: 23, z: 10 },
+        { x: 25, z: 16 },
+        { x: 15, z: -5 },
+        { x: 5, z: -10 },
+        { x: -5, z: -10 },
+        { x: -15, z: -5 }
+    ];
+
+    let indiceRecorrido = 0;
+
+    function siguientePuntoRecorrido() {
+        for (
+            let i = 0;
+            i < puntosRecorrido.length;
+            i++
+        ) {
+            const indice =
+                (indiceRecorrido + i) %
+                puntosRecorrido.length;
+
+            const candidato = puntosRecorrido[indice];
+
+            if (
+                puntoLibre(candidato.x, candidato.z) &&
+                distanciaXZ(grupo.position, candidato) > 2
+            ) {
+                indiceRecorrido =
+                    (indice + 1) % puntosRecorrido.length;
+
+                return candidato;
+            }
+        }
+
+        return { x: 0, z: 10 };
+    }
+
+    function iniciarPaseo() {
+        if (
+            !establecerObjetivo(
+                siguientePuntoRecorrido(),
+                ESTADOS.RUTA
+            )
+        ) {
+            cambiarEstado(ESTADOS.ESPERANDO);
+        }
+    }
+
+    
+    
+    
+
+    function dirigirseACaja(
+        posicionCaja = config.posicionCaja,
+        callback = null
+    ) {
+        if (compras.length === 0) {
+            cambiarEstado(ESTADOS.FINALIZADO);
+            return false;
+        }
+
+        callbackPagoPendiente = callback;
+
+        const destino = {
+            x: numero(posicionCaja.x, config.posicionCaja.x),
+            z: numero(posicionCaja.z, config.posicionCaja.z)
+        };
+
+        return establecerObjetivo(
+            destino,
+            ESTADOS.CAJA
+        );
+    }
+
+    function completarPago() {
+        const articulos = compras.map(compra => {
+            const objeto = compra.objeto ?? null;
+            const datos = objeto?.userData ?? {};
+
+            return {
+                nombre:
+                    compra.nombre ??
+                    datos.nombre ??
+                    objeto?.name ??
+                    'Producto',
+
+                codigo:
+                    compra.codigo ??
+                    datos.codigo ??
+                    '',
+
+                precio: numero(
+                    compra.precio,
+                    numero(datos.precio, 0)
+                ),
+
+                cantidad: 1
+            };
+        });
+
+        const total = articulos.reduce(
+            (suma, articulo) =>
+                suma + articulo.precio * articulo.cantidad,
+            0
+        );
+
+        const ticket = {
+            idTicket: `T-${id}-${Date.now()}`,
+            idCliente: id,
+            fecha: new Date().toLocaleString('es-MX'),
+
+            articulos,
+            productos: articulos,
+
+            totalProductos: articulos.length,
+            total
+        };
+
+        try {
+            config.alPagar?.({
+                cliente: api,
+                productos: compras,
+                articulos,
+                totalProductos: compras.length,
+                total,
+                ticket
+            });
+        } catch (error) {
+            console.error(
+                `[CLIENTE ${id}] Error al notificar el pago:`,
+                error
+            );
+        }
+
+        compras.forEach(compra => {
+            if (compra.objeto) {
+                compra.objeto.userData.vendido = true;
+                compra.objeto.userData.enCarrito = false;
+            }
+        });
+
+        ticketPendiente = ticket;
+
+        cambiarEstado(ESTADOS.PAGANDO);
+    }
+
+    
+    
+    
+
+    function crearRutaPorPuerta(
+        destinoFinal,
+        tipo = 'salida'
+    ) {
+        const puertaInterior = {
+            x: config.puertaCentroX,
+            z: config.puertaZInterior
+        };
+
+        const puertaUmbral = {
+            x: config.puertaCentroX,
+            z: config.puertaZUmbral
+        };
+
+        const puertaExterior = {
+            x: config.puertaCentroX,
+            z: config.puertaZExterior
+        };
+
+        const puntos = tipo === 'entrada'
+            ? [
+                puertaExterior,
+                puertaUmbral,
+                puertaInterior,
+                {
+                    x: numero(destinoFinal.x),
+                    z: numero(destinoFinal.z)
+                }
+            ]
+            : [
+                puertaInterior,
+                puertaUmbral,
+                puertaExterior,
+                {
+                    x: numero(destinoFinal.x),
+                    z: numero(destinoFinal.z)
+                }
+            ];
+
+        const caminoCompleto = [];
+
+        let actual = {
+            x: grupo.position.x,
+            z: grupo.position.z
+        };
+
+        for (const punto of puntos) {
+            const tramo = encontrarCamino(actual, punto);
+
+            if (!tramo.length) {
+                console.warn(
+                    `[CLIENTE ${id}] No pudo calcular el tramo de puerta:`,
+                    punto
+                );
+
+                return [];
+            }
+
+            caminoCompleto.push(...tramo);
+
+            actual = tramo[tramo.length - 1];
+        }
+
+        return caminoCompleto;
+    }
+
+    
+    
+    
+
+    function iniciarDesdeVehiculo(posicionEntrada, plaza) {
+        if (!posicionEntrada || !plaza) {
+            console.warn(
+                `[CLIENTE ${id}] Faltan datos del vehículo.`
+            );
+
+            return false;
+        }
+
+        if ([
+            ESTADOS.ENTRANDO,
+            ESTADOS.BUSCANDO,
+            ESTADOS.ACERCANDO,
+            ESTADOS.RECOGIENDO,
+            ESTADOS.INSPECCIONANDO,
+            ESTADOS.DECIDIENDO,
+            ESTADOS.GUARDANDO,
+            ESTADOS.DEVOLVIENDO,
+            ESTADOS.RUTA,
+            ESTADOS.CAJA,
+            ESTADOS.PAGANDO,
+            ESTADOS.REGRESANDO
+        ].includes(estado)) {
+            console.warn(
+                `[CLIENTE ${id}] Ya está realizando una actividad.`
+            );
+
+            return false;
+        }
+
+        liberarReserva();
+
+        if (productoEnMano) {
+            finalizarDevolucionProducto();
+        }
+
+        animacionAgarre.activa = false;
+        animacionAgarre.tiempo = 0;
+
+        animacionProducto.activa = false;
+        animacionProducto.tipo = null;
+        animacionProducto.fase = null;
+
+        compras = [];
+
+        productosExaminados.clear();
+        productosConRutaFallida.clear();
+        racksVisitados.clear();
+
+        callbackPagoPendiente = null;
+        ticketPendiente = null;
+        callbackRegreso = null;
+
+        entradaNotificada = false;
+
+        grupo.position.set(
+            numero(posicionEntrada.x, plaza.x),
+            numero(config.posicion.y),
+            numero(posicionEntrada.z, plaza.z)
+        );
+
+        actualizarColisiones();
+
+        const camino = crearRutaPorPuerta(
+            {
+                x: 0,
+                z: config.puertaZInterior
+            },
+            'entrada'
+        );
+
+        if (!camino.length) {
+            console.warn(
+                `[CLIENTE ${id}] No se encontró ruta de entrada por la puerta.`
+            );
+
+            return false;
+        }
+
+        ruta = camino;
+        indiceRuta = 0;
+        objetivo = camino[camino.length - 1];
+
+        cambiarEstado(ESTADOS.ENTRANDO);
+
+        return true;
+    }
+
+    
+    
+    
+
+    function iniciarRegresoVehiculo(plaza, callback) {
+        if (!plaza || eliminado) return false;
+
+        if (
+            estado === ESTADOS.REGRESANDO ||
+            estado === ESTADOS.FINALIZADO
+        ) {
+            return false;
+        }
+
+        liberarReserva();
+
+        if (productoEnMano) {
+            finalizarDevolucionProducto();
+        }
+
+        animacionAgarre.activa = false;
+        animacionAgarre.tiempo = 0;
+
+        actualizarColisiones();
+
+        const destino = {
+            x: numero(plaza.x),
+            z: numero(plaza.z)
+        };
+
+        const camino = crearRutaPorPuerta(
+            destino,
+            'salida'
+        );
+
+        if (!camino.length) {
+            console.warn(
+                `[CLIENTE ${id}] No hay ruta de regreso por la puerta.`,
+                {
+                    posicion: {
+                        x: grupo.position.x,
+                        z: grupo.position.z
+                    },
+                    plaza: destino
+                }
+            );
+
+            return false;
+        }
+
+        ruta = camino;
+        indiceRuta = 0;
+        objetivo = camino[camino.length - 1];
+
+        callbackRegreso =
+            typeof callback === 'function'
+                ? callback
+                : null;
+
+        cambiarEstado(ESTADOS.REGRESANDO);
+
+        console.log(
+            `[CLIENTE ${id}] Regresando a su vehículo.`
+        );
+
+        return true;
+    }
+
+    function finalizarRegreso() {
+        if (estado !== ESTADOS.REGRESANDO) return;
+
+        cambiarEstado(ESTADOS.FINALIZADO);
+
+        const callback = callbackRegreso;
+
+        callbackRegreso = null;
+
+        if (typeof callback === 'function') {
+            try {
+                callback(api);
+            } catch (error) {
+                console.error(
+                    `[CLIENTE ${id}] Error al finalizar el regreso:`,
+                    error
+                );
+            }
+        }
+
+        try {
+            config.alFinalizar?.(api);
+        } catch (error) {
+            console.error(
+                `[CLIENTE ${id}] Error en alFinalizar:`,
+                error
+            );
+        }
+    }
+
+    
+    
+    
+
+    function notificarEntrada() {
+        if (entradaNotificada) return;
+
+        entradaNotificada = true;
+
+        console.log(
+            `[CLIENTE ${id}] Entró al supermercado.`
+        );
+
+        try {
+            config.alEntrar?.({
+                cliente: api,
+                posicion: grupo.position.clone(),
+                id
+            });
+        } catch (error) {
+            console.error(error);
+        }
+
+        cambiarEstado(ESTADOS.BUSCANDO);
+    }
+
+    
+    
+    
+
+function actualizar(delta) {
+    if (eliminado || detenido) return;
+
+    delta = limitar(numero(delta, 0), 0, 0.05);
+
+    tiempoEstado += delta;
+    tiempoActualizarObstaculos += delta;
+    tiempoRecalculoRuta += delta;
+
+    const moviendo = estaCaminando();
+
+    if (moviendo) {
+        const desplazamiento = distanciaXZ(
+            ultimaPosicionMovimiento,
+            grupo.position
+        );
+
+        if (desplazamiento > 0.04) {
+            ultimaPosicionMovimiento.set(
+                grupo.position.x,
+                grupo.position.y,
+                grupo.position.z
+            );
+            tiempoSinMovimiento = 0;
+        } else {
+            tiempoSinMovimiento += delta;
+        }
+
+        if (tiempoSinMovimiento >= config.tiempoMaximoAtasco) {
+            resolverClienteAtascado();
+        }
+    } else {
+        tiempoSinMovimiento = 0;
+    }
+
+    if (tiempoActualizarObstaculos >= 2) {
+        actualizarColisiones();
+    }
+
+    if (mixer) {
+        mixer.update(delta);
+    }
+
+    tiempoIdle += delta;
+
+    if (!estaCaminando()) {
+        const respiracion = Math.sin(tiempoIdle * 1.35) * 0.012;
+        const mirarAlrededor = Math.sin(tiempoIdle * 0.31) * 0.035;
+
+        inclinacionCabezaObjetivo = mirarAlrededor;
+
+        if (!animacionProceduralActiva()) {
+            aplicarRotacion(rig.torso, EJE_X, respiracion);
+            aplicarRotacion(rig.cabeza, EJE_X, mirarAlrededor);
+        }
+    } else {
+        velocidadActual = THREE.MathUtils.lerp(
+            velocidadActual,
+            0,
+            1 - Math.exp(-4 * delta)
+        );
+
+        movimientoSuave = THREE.MathUtils.lerp(
+            movimientoSuave,
+            0,
+            1 - Math.exp(-5 * delta)
+        );
+
+        giroCabezaObjetivo = THREE.MathUtils.lerp(
+            giroCabezaObjetivo,
+            0,
+            1 - Math.exp(-2.5 * delta)
+        );
+    }
+
+    if (accionCaminar?.isRunning()) {
+        accionCaminar.paused = !estaCaminando();
+    }
+
+    if (accionReposo?.isRunning()) {
+        accionReposo.paused = [
+            ESTADOS.ENTRANDO,
+            ESTADOS.ACERCANDO,
+            ESTADOS.RUTA,
+            ESTADOS.CAJA,
+            ESTADOS.REGRESANDO,
+            ESTADOS.RECOGIENDO,
+            ESTADOS.INSPECCIONANDO,
+            ESTADOS.GUARDANDO,
+            ESTADOS.DEVOLVIENDO,
+            ESTADOS.PAGANDO
+        ].includes(estado);
+    }
+
+    if (animacionAgarre.activa) {
+        actualizarAnimacionAgarre(delta);
+    }
+
+    switch (estado) {
+
+        case ESTADOS.INACTIVO:
+            break;
+
+        // =========================================
+        // MOVIMIENTO Y APROXIMACIÓN
+        // =========================================
+
+        case ESTADOS.ENTRANDO:
+        case ESTADOS.ACERCANDO:
+        case ESTADOS.RUTA:
+        case ESTADOS.CAJA:
+        case ESTADOS.REGRESANDO: {
+
+            const estadoActual = estado;
+
+            const terminado = moverHaciaDestino(delta);
+
+            if (!terminado) break;
+
+            if (estadoActual === ESTADOS.ENTRANDO) {
+                notificarEntrada();
+
+            } else if (estadoActual === ESTADOS.ACERCANDO) {
+
+                if (productoObjetivo) {
+
+                    productoObjetivo.updateMatrixWorld(true);
+
+                    cajaTemporal.setFromObject(productoObjetivo);
+
+                    if (!cajaTemporal.isEmpty()) {
+                        cajaTemporal.getCenter(vectorTemporal);
+                    } else {
+                        productoObjetivo.getWorldPosition(vectorTemporal);
+                    }
+
+                    const dx = vectorTemporal.x - grupo.position.x;
+                    const dz = vectorTemporal.z - grupo.position.z;
+
+                    if (Math.abs(dx) + Math.abs(dz) > 0.0001) {
+                        rotacionObjetivo =
+                            Math.atan2(dx, dz) +
+                            config.correccionRotacion;
+
+                        grupo.rotation.y = rotacionObjetivo;
+                    }
+
+                    grupo.updateMatrixWorld(true);
+
+                    const producto = productoObjetivo;
+
+                    const brazoSeleccionado =
+                        seleccionarBrazoAgarre(producto);
+
+                    console.log(
+                        `[TRANSICIÓN CLIENTE ${id}]`,
+                        {
+                            producto:
+                                producto.userData?.nombre ??
+                                producto.name,
+
+                            brazoSeleccionado,
+
+                            manoDisponible:
+                                !!obtenerRigBrazo().mano,
+
+                            ladoAgarre,
+
+                            posicionCliente: {
+                                x: Number(grupo.position.x.toFixed(2)),
+                                z: Number(grupo.position.z.toFixed(2))
+                            }
+                        }
+                    );
+productoEsSuperior = esProductoSuperior(producto);
+                    if (
+                        brazoSeleccionado &&
+                        obtenerRigBrazo().mano
+                    ) {
+                        cambiarEstado(ESTADOS.RECOGIENDO);
+
+                    } else {
+
+                        console.warn(
+                            `[CLIENTE ${id}] No pudo seleccionar un brazo para recoger.`,
+                            {
+                                brazoSeleccionado,
+                                manoDisponible:
+                                    !!obtenerRigBrazo().mano
+                            }
+                        );
+
+                        if (producto) {
+                            productosConRutaFallida.add(producto);
+                        }
+
+                        liberarReserva();
+                        cambiarEstado(ESTADOS.BUSCANDO);
+                    }
+
+                } else {
+
+                    console.warn(
+                        `[CLIENTE ${id}] Llegó al destino sin producto objetivo.`
+                    );
+
+                    cambiarEstado(ESTADOS.BUSCANDO);
+                }
+
+            } else if (estadoActual === ESTADOS.RUTA) {
+
+                if (compras.length >= config.maximoProductos) {
+                    dirigirseACaja();
+                } else {
+                    productosConRutaFallida.clear();
+                    cambiarEstado(ESTADOS.BUSCANDO);
+                }
+
+            } else if (estadoActual === ESTADOS.CAJA) {
+
+                completarPago();
+
+            } else if (estadoActual === ESTADOS.REGRESANDO) {
+
+                finalizarRegreso();
+            }
+
+            break;
+        }
+
+        // =========================================
+        // BUSCAR PRODUCTOS
+        // =========================================
+
+        case ESTADOS.BUSCANDO: {
+
+            if (
+                tiempoEstado <
+                config.tiempoEntreProductos
+            ) {
+                break;
+            }
+
+            if (
+                compras.length >=
+                config.maximoProductos
+            ) {
+                dirigirseACaja();
+                break;
+            }
+
+            decidirCompra();
+
+            break;
+        }
+
+        // =========================================
+        // RECOGER PRODUCTO
+        // =========================================
+
+        case ESTADOS.RECOGIENDO: {
+
+            console.log(
+                `[ENTRÓ A RECOGIENDO CLIENTE ${id}]`,
+                {
+                    producto:
+                        productoObjetivo?.userData?.nombre ??
+                        productoObjetivo?.name,
+
+                    ladoAgarre,
+
+                    tiempoEstado: Number(
+                        tiempoEstado.toFixed(2)
+                    )
+                }
+            );
+
+            animarRecogerProcedural();
+
+            const agarreResuelto =
+                ajustarBrazoAlProducto(productoObjetivo);
+
+            console.log(
+                `[PRUEBA RECOGIDA CLIENTE ${id}]`,
+                {
+                    producto:
+                        productoObjetivo?.userData?.nombre ??
+                        productoObjetivo?.name,
+
+                    agarreResuelto,
+
+                    tiempoEstado: Number(
+                        tiempoEstado.toFixed(2)
+                    )
+                }
+            );
+
+            if (
+                tiempoEstado >=
+                Math.max(
+                    numero(config.tiempoRecoger, 1.1),
+                    0.01
+                )
+            ) {
+
+                console.log(
+                    `[PRUEBA LLAMADA TOMAR PRODUCTO ${id}]`,
+                    {
+                        agarreResuelto,
+
+                        tiempoEstado: Number(
+                            tiempoEstado.toFixed(2)
+                        )
+                    }
+                );
+
+                tomarProducto(agarreResuelto);
+            }
+
+            break;
+        }
+
+        // =========================================
+        // INSPECCIONAR PRODUCTO
+        // =========================================
+
+        case ESTADOS.INSPECCIONANDO: {
+
+            animarInspeccionarProcedural();
+
+            if (productoEnMano) {
+
+                const mano = obtenerRigBrazo()?.mano;
+
+                if (mano) {
+
+                    grupo.updateMatrixWorld(true);
+                    mano.updateMatrixWorld(true);
+                    productoEnMano.updateMatrixWorld(true);
+
+                    const palma = mano.localToWorld(
+                        ikAgarre.offsetPalmaLocal.clone()
+                    );
+
+                    const centroProducto = new THREE.Box3()
+                        .setFromObject(productoEnMano)
+                        .getCenter(new THREE.Vector3());
+
+                    console.log(
+                        `[INSPECCION CLIENTE ${id}]`,
+                        {
+                            unidoALaMano:
+                                productoEnMano.parent === mano,
+
+                            distanciaPalmaCentro: Number(
+                                palma.distanceTo(centroProducto).toFixed(3)
+                            ),
+
+                            palma: palma.toArray().map(
+                                v => Number(v.toFixed(3))
+                            ),
+
+                            centroProducto: centroProducto.toArray().map(
+                                v => Number(v.toFixed(3))
+                            )
+                        }
+                    );
+                }
+            }
+
+            if (
+                tiempoEstado >=
+                config.tiempoInspeccionar
+            ) {
+                cambiarEstado(ESTADOS.DECIDIENDO);
+            }
+
+            break;
+        }
+
+        // =========================================
+        // DECIDIR SI COMPRA O DEVUELVE
+        // =========================================
+
+        case ESTADOS.DECIDIENDO: {
+
+            const duda = Math.sin(tiempoEstado * 2.15) * 0.035;
+
+            aplicarRotacionEuler(
+                rig.cabeza,
+                0.08 + duda,
+                Math.sin(tiempoEstado * 0.85) * 0.12,
+                Math.sin(tiempoEstado * 1.35) * 0.045
+            );
+
+            aplicarRotacionEuler(
+                rig.torso,
+                0.02,
+                -Math.sin(tiempoEstado * 0.85) * 0.04,
+                0
+            );
+
+            if (tiempoEstado >= 0.5) {
+
+                decisionCompra =
+                    Math.random() < config.probabilidadCompra;
+
+                if (decisionCompra) {
+
+                    cambiarEstado(ESTADOS.GUARDANDO);
+
+                } else {
+
+                    const quiereReubicar =
+                        Math.random() <
+                        config.probabilidadDejarEnOtroRack;
+
+                    let reubicado = false;
+
+                    if (quiereReubicar) {
+                        reubicado =
+                            prepararDevolucionEnOtroRack();
+                    }
+
+                    if (!reubicado) {
+                        animacionProducto.tipo = 'DEVOLVER';
+                    }
+
+                    devolverProductoAlEstante();
+
+                    cambiarEstado(ESTADOS.DEVOLVIENDO);
+                }
+            }
+
+            break;
+        }
+
+        // =========================================
+        // GUARDAR PRODUCTO
+        // =========================================
+
+case ESTADOS.GUARDANDO: {
+
+    animarGuardarProcedural();
+
+    if (
+        animacionDeposito.error ||
+        animacionDeposito.completada
+    ) {
+        guardarProducto();
+    }
+
+    break;
+}
+
+        // =========================================
+        // DEVOLVER PRODUCTO
+        // =========================================
+
+     case ESTADOS.DEVOLVIENDO: {
+
+    if (animacionProducto.fase === 'CAMINANDO') {
+
+        if (moverHaciaDestino(delta)) {
+
+            animacionProducto.fase = 'COLOCANDO';
+
+            tiempoEstado = 0;
+
+            if (productoOriginal?.parent) {
+
+                productoOriginal.parent.updateMatrixWorld(true);
+
+                const destino =
+                    productoOriginal.parent.localToWorld(
+                        productoOriginal.posicion.clone()
+                    );
+
+                orientarHaciaPunto({
+                    x: destino.x,
+                    z: destino.z
+                });
+            }
+
+            devolverProductoAlEstante();
+        }
+
+        break;
+    }
+
+    animarDevolverProcedural();
+
+    actualizarAnimacionProducto(delta);
+
+    if (
+        tiempoEstado >= config.tiempoDevolver &&
+        !animacionProducto.activa
+    ) {
+
+        // Si acaba de colocar un producto en otro rack,
+        // regresar caminando al lugar donde quedó el carrito.
+        if (
+            productoReubicadoPendiente &&
+            tienePosicionClienteAntesDeReubicar
+        ) {
+
+            productoReubicadoPendiente = false;
+
+            const destinoCarrito = {
+                x: posicionClienteAntesDeReubicar.x,
+                z: posicionClienteAntesDeReubicar.z
+            };
+
+            if (
+                establecerObjetivo(
+                    destinoCarrito,
+                    ESTADOS.REGRESANDO_CARRITO
+                )
+            ) {
+                break;
+            }
+
+            // Si no existe una ruta válida, continuar
+            // con el comportamiento habitual.
+            tienePosicionClienteAntesDeReubicar = false;
+
+        }
+
+        cambiarEstado(ESTADOS.BUSCANDO);
+    }
+
+    break;
+}
+case ESTADOS.REGRESANDO_CARRITO: {
+
+    if (moverHaciaDestino(delta)) {
+
+        tienePosicionClienteAntesDeReubicar = false;
+
+        // El cliente ya llegó al lugar donde dejó el carrito.
+        // El seguimiento se reanudará cuando vuelva a desplazarse.
+        cambiarEstado(ESTADOS.BUSCANDO);
+    }
+
+    break;
+}
+
+        // =========================================
+        // ESPERAR / REINTENTAR
+        // =========================================
+
+        case ESTADOS.ESPERANDO: {
+
+            aplicarRotacionEuler(
+                rig.cabeza,
+                0.06 + Math.sin(tiempoEstado * 1.8) * 0.018,
+                Math.sin(tiempoEstado * 0.42) * 0.14,
+                Math.sin(tiempoEstado * 0.58) * 0.035
+            );
+
+            aplicarRotacionEuler(
+                rig.brazoDerecho,
+                -0.12,
+                0,
+                Math.sin(tiempoEstado * 0.7) * 0.025
+            );
+
+            aplicarRotacionEuler(
+                rig.brazoIzquierdo,
+                -0.12,
+                0,
+                -Math.sin(tiempoEstado * 0.7) * 0.025
+            );
+
+            if (
+                tiempoEstado >= config.tiempoReintento
+            ) {
+
+                if (
+                    compras.length >=
+                    config.maximoProductos
+                ) {
+                    dirigirseACaja();
+
+                } else if (
+                    config.soloPlatanos ||
+                    config.nombreProductoBuscado
+                ) {
+                    cambiarEstado(ESTADOS.BUSCANDO);
+
+                } else {
+                    iniciarPaseo();
+                }
+            }
+
+            break;
+        }
+
+        // =========================================
+        // PAGAR
+        // =========================================
+
+        case ESTADOS.PAGANDO: {
+
+            animarPagarProcedural();
+
+            if (
+                tiempoEstado >=
+                Math.max(numero(config.tiempoPago, 3.0), 0.1)
+            ) {
+
+                const ticket = ticketPendiente;
+
+                ticketPendiente = null;
+
+                if (config.repetirRuta) {
+
+                    compras = [];
+
+                    productosExaminados.clear();
+                    productosConRutaFallida.clear();
+                    racksVisitados.clear();
+
+                    cambiarEstado(ESTADOS.BUSCANDO);
+
+                } else {
+
+                    const callback = callbackPagoPendiente;
+
+                    callbackPagoPendiente = null;
+
+                    if (typeof callback === 'function') {
+                        try {
+                            callback(ticket);
+                        } catch (error) {
+                            console.error(
+                                `[CLIENTE ${id}] Error en callback de pago:`,
+                                error
+                            );
+                        }
+                    }
+
+                    if (estado === ESTADOS.PAGANDO) {
+                        cambiarEstado(ESTADOS.FINALIZADO);
+                    }
+                }
+            }
+
+            break;
+        }
+
+        case ESTADOS.FINALIZADO:
+            break;
+    }
+
+    // =========================================
+    // ANIMACIÓN DEL CARRITO
+    // =========================================
+
+    if (
+        config.carrito?.siguiendo &&
+        [
+            ESTADOS.ENTRANDO,
+            ESTADOS.ACERCANDO,
+            ESTADOS.RUTA,
+            ESTADOS.CAJA,
+            ESTADOS.REGRESANDO
+        ].includes(estado)
+    ) {
+        animarEmpujarCarrito();
+    }
+}
+
+    
+    
+    
+
+    function animacionProceduralActiva() {
+        return [
+            ESTADOS.RECOGIENDO,
+            ESTADOS.INSPECCIONANDO,
+            ESTADOS.GUARDANDO,
+            ESTADOS.DEVOLVIENDO,
+            ESTADOS.PAGANDO
+        ].includes(estado);
+    }
+
+    function configurarCompras(opcionesCompras = {}) {
+        if (
+            typeof opcionesCompras.probabilidadCompra === 'number'
+        ) {
+            config.probabilidadCompra = limitar(
+                opcionesCompras.probabilidadCompra,
+                0,
+                1
+            );
+        }
+
+        if (
+            typeof opcionesCompras.probabilidadDejarEnOtroRack ===
+            'number'
+        ) {
+            config.probabilidadDejarEnOtroRack = limitar(
+                opcionesCompras.probabilidadDejarEnOtroRack,
+                0,
+                1
+            );
+        }
+
+        if (
+            typeof opcionesCompras.maximoProductos === 'number'
+        ) {
+            config.maximoProductos = Math.max(
+                1,
+                Math.floor(opcionesCompras.maximoProductos)
+            );
+        }
+
+        if (
+            typeof opcionesCompras.tiempoEntreProductos === 'number'
+        ) {
+            config.tiempoEntreProductos = Math.max(
+                0,
+                opcionesCompras.tiempoEntreProductos
+            );
+        }
+
+        if (
+            typeof opcionesCompras.tiempoAnimacionAgarre === 'number'
+        ) {
+            config.tiempoAnimacionAgarre = Math.max(
+                0.05,
+                opcionesCompras.tiempoAnimacionAgarre
+            );
+
+            animacionAgarre.duracion =
+                config.tiempoAnimacionAgarre;
+        }
+
+        if (opcionesCompras.productos) {
+            config.productos = opcionesCompras.productos;
+        }
+
+        if (opcionesCompras.carrito) {
+            config.carrito = opcionesCompras.carrito;
+            actualizarSeguimientoCarrito();
+        }
+
+        if (opcionesCompras.mobiliario) {
+            config.mobiliario = opcionesCompras.mobiliario;
+
+            if (
+                Array.isArray(opcionesCompras.mobiliario) &&
+                !Array.isArray(opcionesCompras.colisiones)
+            ) {
+                config.colisiones = opcionesCompras.mobiliario;
+            }
+
+            actualizarColisiones();
+        }
+
+        if (opcionesCompras.colisiones) {
+            config.colisiones = opcionesCompras.colisiones;
+            actualizarColisiones();
+        }
+
+        if (
+            typeof opcionesCompras.intervaloRecalculoRuta === 'number'
+        ) {
+            config.intervaloRecalculoRuta = Math.max(
+                0.1,
+                opcionesCompras.intervaloRecalculoRuta
+            );
+        }
+
+        if (
+            typeof opcionesCompras.tiempoMaximoAtasco === 'number'
+        ) {
+            config.tiempoMaximoAtasco = Math.max(
+                0.5,
+                numero(
+                    opcionesCompras.tiempoMaximoAtasco,
+                    CONFIG_BASE.tiempoMaximoAtasco
+                )
+            );
+        }
+
+        
+        if (typeof opcionesCompras.soloPlatanos === 'boolean') {
+            config.soloPlatanos = opcionesCompras.soloPlatanos;
+        }
+
+        if (typeof opcionesCompras.nombreProductoBuscado === 'string') {
+            config.nombreProductoBuscado =
+                opcionesCompras.nombreProductoBuscado;
+        }
+    }
+
+    
+    
+    
+
+    function detenerAnimacion() {
+        detenido = true;
+
+        accionCaminar?.fadeOut(0.2);
+        accionReposo?.fadeOut(0.2);
+    }
+
+    function reproducirAnimacion() {
+        if (eliminado) return;
+
+        detenido = false;
+
+        if ([
+            ESTADOS.ENTRANDO,
+            ESTADOS.ACERCANDO,
+            ESTADOS.RUTA,
+            ESTADOS.CAJA,
+            ESTADOS.REGRESANDO
+        ].includes(estado)) {
+            activarCaminarGLB();
+        } else {
+            activarReposoGLB();
+        }
+    }
+
+    
+    
+    
+
+    function eliminar() {
+        if (eliminado) return;
+
+        if (productoEnMano) {
+            finalizarDevolucionProducto();
+        }
+
+        animacionAgarre.activa = false;
+        animacionProducto.activa = false;
+        animacionProducto.fase = null;
+
+        liberarReserva();
+        productosConRutaFallida.clear();
+
+        callbackPagoPendiente = null;
+        callbackRegreso = null;
+        ticketPendiente = null;
+
+        mixer?.stopAllAction();
+        mixer?.uncacheRoot(modelo);
+
+        mixer = null;
+
+        grupo.parent?.remove(grupo);
+
+        eliminado = true;
+        detenido = true;
+
+        ruta = [];
+        objetivo = null;
+    }
+
+    
+    
+    
+
+    const api = {
+        grupo,
+
+        actualizar,
+
+        establecerRuta,
+
+        establecerPosicion,
+
+        configurarCompras,
+
+        detenerAnimacion,
+
+        reproducirAnimacion,
+
+        iniciarDesdeVehiculo,
+
+        iniciarRegresoVehiculo,
+
+        iniciarPago: dirigirseACaja,
+
+        obtenerObjetivo: () => {
+            return objetivo
+                ? { ...objetivo }
+                : null;
+        },
+
+        obtenerCompras: () => {
+            return compras.map(compra => ({
+                nombre: compra.nombre,
+                codigo: compra.codigo,
+                precio: compra.precio
+            }));
+        },
+
+        obtenerResumen: () => ({
+            id,
+            estado,
+
+            productos: compras.length,
+
+            posicion: {
+                x: grupo.position.x,
+                z: grupo.position.z
+            }
+        }),
+
+        obtenerEstado: () => estado,
+
+        actualizarColisiones,
+
+        eliminar,
+
+        get cargado() {
+            return cargado;
+        },
+
+        get huesos() {
+            return huesos;
+        },
+
+        get estado() {
+            return estado;
+        },
+
+        get eliminado() {
+            return eliminado;
+        },
+
+        get detenido() {
+            return detenido;
+        },
+
+        get modelo() {
+            return modelo;
+        },
+
+        get productoEnMano() {
+            return productoEnMano;
+        }
+    };
+
+    actualizarColisiones();
+
+    return api;
+}
